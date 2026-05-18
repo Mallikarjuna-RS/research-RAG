@@ -15,6 +15,9 @@ uploads/
 data/
 logs/
 
+# Claude IDE config (contains local permissions, never commit)
+.claude/
+
 # OS
 .DS_Store
 Thumbs.db

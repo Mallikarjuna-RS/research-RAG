@@ -29,8 +29,8 @@ services:
     image: minio/minio:RELEASE.2024-01-16T16-07-38Z
     container_name: milvus-minio
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-minioadmin}
+      MINIO_ROOT_USER: ${MINIO_USER:?MINIO_USER env var required}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:?MINIO_PASSWORD env var required}
       MINIO_PROMETHEUS_AUTH_TYPE: "public"
     volumes:
       - minio-data:/minio_data
@@ -54,8 +54,8 @@ services:
     environment:
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio:9000
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: ${MINIO_PASSWORD:-minioadmin}
+      MINIO_ACCESS_KEY: ${MINIO_USER:?MINIO_USER env var required}
+      MINIO_SECRET_KEY: ${MINIO_PASSWORD:?MINIO_PASSWORD env var required}
     volumes:
       - milvus-data:/var/lib/milvus
       - ./config/milvus.yaml:/milvus/configs/milvus.yaml
@@ -83,7 +83,7 @@ services:
     image: neo4j:5.15.0-enterprise
     container_name: neo4j-kg
     environment:
-      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-research-rag-2024}
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD env var required}
       - NEO4J_ACCEPT_LICENSE_AGREEMENT=yes
       - NEO4J_server_memory_heap_initial__size=2G
       - NEO4J_server_memory_heap_max__size=4G
@@ -120,7 +120,7 @@ services:
     container_name: redis-cache
     command: >
       redis-server
-      --requirepass ${REDIS_PASSWORD:-research-rag-redis}
+      --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD env var required}
       --maxmemory 2gb
       --maxmemory-policy allkeys-lru
       --save 900 1
@@ -157,10 +157,10 @@ services:
       - MILVUS_PORT=19530
       - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_USER=neo4j
-      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-research-rag-2024}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:?NEO4J_PASSWORD env var required}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-research-rag-redis}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD env var required}
       
       # External APIs
       - OPENAI_API_KEY=${OPENAI_API_KEY}

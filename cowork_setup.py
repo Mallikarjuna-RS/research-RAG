@@ -210,9 +210,10 @@ ANTHROPIC_API_KEY=sk-ant-...
 # ========================================
 # DATABASE CREDENTIALS
 # ========================================
-NEO4J_PASSWORD=research-rag-2024
-REDIS_PASSWORD=research-rag-redis
-MINIO_PASSWORD=minioadmin
+NEO4J_PASSWORD=change-me-strong-password
+REDIS_PASSWORD=change-me-strong-password
+MINIO_PASSWORD=change-me-strong-password
+MINIO_USER=change-me-admin-user
 MILVUS_TOKEN=your-milvus-token
 
 # ========================================

@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "PowerShell(Invoke-RestMethod http://localhost:8000/health)",
-      "PowerShell(Start-Sleep 4; try { Invoke-RestMethod http://localhost:8000/health | ConvertTo-Json } catch { \"Error: $_\" })"
-    ]
-  }
-}

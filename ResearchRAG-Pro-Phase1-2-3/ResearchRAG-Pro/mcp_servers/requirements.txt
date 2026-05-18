@@ -1,0 +1,42 @@
+# MCP Server Dependencies for ResearchRAG Pro
+
+# Core MCP
+mcp>=0.9.0
+
+# Document Parsing
+pymupdf>=1.23.8
+pdf2image>=1.16.3
+Pillow>=10.2.0
+pypdf>=3.17.4
+
+# Vector Database
+pymilvus>=2.3.5
+pinecone-client>=3.0.2
+
+# Math Rendering & Validation
+sympy>=1.12
+pylatexenc>=2.10
+
+# Knowledge Graph
+neo4j>=5.16.0
+
+# Evaluation
+ragas>=0.1.0
+datasets>=2.16.0
+
+# ML & Embeddings
+openai>=1.10.0
+sentence-transformers>=2.3.1
+torch>=2.1.2
+transformers>=4.37.0
+
+# Utilities
+python-dotenv>=1.0.0
+aiofiles>=23.2.1
+httpx>=0.26.0
+
+# Development
+pytest>=7.4.4
+pytest-asyncio>=0.23.3
+black>=24.1.1
+ruff>=0.1.14

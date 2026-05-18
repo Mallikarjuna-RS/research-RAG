@@ -1,0 +1,647 @@
+---
+# ========================================
+# NAMESPACE
+# ========================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: research-rag
+  labels:
+    name: research-rag
+    environment: production
+
+---
+# ========================================
+# CONFIGMAP - APPLICATION CONFIG
+# ========================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: research-rag-config
+  namespace: research-rag
+data:
+  LOG_LEVEL: "INFO"
+  WORKERS: "8"
+  MAX_UPLOAD_SIZE: "104857600"  # 100MB
+  ENABLE_METRICS: "true"
+  METRICS_PORT: "9090"
+  
+  # Database endpoints (using external managed services)
+  MILVUS_HOST: "milvus.zillizcloud.com"
+  MILVUS_PORT: "19530"
+  NEO4J_URI: "bolt+s://xxxxx.databases.neo4j.io:7687"
+  REDIS_HOST: "research-rag.xxxxx.ng.0001.use1.cache.amazonaws.com"
+  REDIS_PORT: "6379"
+  
+  # CORS
+  CORS_ORIGINS: "https://rag.production.com"
+
+---
+# ========================================
+# SECRET - SENSITIVE CREDENTIALS
+# ========================================
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: research-rag-secrets
+  namespace: research-rag
+type: Opaque
+stringData:
+  # Populated from AWS Secrets Manager via External Secrets Operator
+  # or created manually: kubectl create secret generic research-rag-secrets --from-literal=...
+  OPENAI_API_KEY: ""
+  ANTHROPIC_API_KEY: ""
+  NEO4J_PASSWORD: ""
+  REDIS_PASSWORD: ""
+  MILVUS_TOKEN: ""
+  API_KEYS: ""
+
+---
+# ========================================
+# DEPLOYMENT - BACKEND API
+# ========================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: research-rag-backend
+  namespace: research-rag
+  labels:
+    app: research-rag-backend
+    component: api
+spec:
+  replicas: 3  # Initial replicas; HPA will scale 3-20
+  selector:
+    matchLabels:
+      app: research-rag-backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: research-rag-backend
+        component: api
+        version: "1.0.0"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: research-rag-backend-sa
+      
+      # Security context
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      
+      initContainers:
+      - name: wait-for-milvus
+        image: busybox:1.36
+        command: ['sh', '-c', 'until nc -z $MILVUS_HOST $MILVUS_PORT; do echo waiting for milvus; sleep 5; done']
+        envFrom:
+        - configMapRef:
+            name: research-rag-config
+      
+      containers:
+      - name: backend
+        image: <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/research-rag-backend:latest
+        imagePullPolicy: Always
+        
+        ports:
+        - name: http
+          containerPort: 8000
+          protocol: TCP
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+        
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        
+        envFrom:
+        - configMapRef:
+            name: research-rag-config
+        - secretRef:
+            name: research-rag-secrets
+        
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "2Gi"
+          limits:
+            cpu: "2000m"
+            memory: "4Gi"
+        
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+        
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: uploads
+          mountPath: /app/uploads
+      
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: uploads
+        emptyDir:
+          sizeLimit: 10Gi
+      
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - research-rag-backend
+              topologyKey: kubernetes.io/hostname
+
+---
+# ========================================
+# SERVICE - BACKEND API
+# ========================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: research-rag-backend-service
+  namespace: research-rag
+  labels:
+    app: research-rag-backend
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
+    protocol: TCP
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+    protocol: TCP
+  selector:
+    app: research-rag-backend
+
+---
+# ========================================
+# HPA - HORIZONTAL POD AUTOSCALER (BACKEND)
+# ========================================
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: research-rag-backend-hpa
+  namespace: research-rag
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: research-rag-backend
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  - type: Pods
+    pods:
+      metric:
+        name: http_requests_per_second
+      target:
+        type: AverageValue
+        averageValue: "100"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+      - type: Pods
+        value: 2
+        periodSeconds: 60
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+      - type: Pods
+        value: 4
+        periodSeconds: 30
+      selectPolicy: Max
+
+---
+# ========================================
+# DEPLOYMENT - FRONTEND
+# ========================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: research-rag-frontend
+  namespace: research-rag
+  labels:
+    app: research-rag-frontend
+    component: ui
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: research-rag-frontend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: research-rag-frontend
+        component: ui
+        version: "1.0.0"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101  # nginx user
+        fsGroup: 101
+      
+      containers:
+      - name: frontend
+        image: <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/research-rag-frontend:latest
+        imagePullPolicy: Always
+        
+        ports:
+        - name: http
+          containerPort: 80
+          protocol: TCP
+        
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        
+        livenessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        
+        readinessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - NET_BIND_SERVICE
+        
+        volumeMounts:
+        - name: cache
+          mountPath: /var/cache/nginx
+        - name: run
+          mountPath: /var/run
+      
+      volumes:
+      - name: cache
+        emptyDir: {}
+      - name: run
+        emptyDir: {}
+
+---
+# ========================================
+# SERVICE - FRONTEND
+# ========================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: research-rag-frontend-service
+  namespace: research-rag
+  labels:
+    app: research-rag-frontend
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+    protocol: TCP
+  selector:
+    app: research-rag-frontend
+
+---
+# ========================================
+# HPA - FRONTEND
+# ========================================
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: research-rag-frontend-hpa
+  namespace: research-rag
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: research-rag-frontend
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+
+---
+# ========================================
+# INGRESS - APPLICATION GATEWAY
+# ========================================
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: research-rag-ingress
+  namespace: research-rag
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    nginx.ingress.kubernetes.io/limit-connections: "500"
+spec:
+  tls:
+  - hosts:
+    - rag.production.com
+    secretName: research-rag-tls
+  rules:
+  - host: rag.production.com
+    http:
+      paths:
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: research-rag-backend-service
+            port:
+              number: 8000
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: research-rag-frontend-service
+            port:
+              number: 80
+
+---
+# ========================================
+# NETWORK POLICY - BACKEND ISOLATION
+# ========================================
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: research-rag-backend-netpol
+  namespace: research-rag
+spec:
+  podSelector:
+    matchLabels:
+      app: research-rag-backend
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow from ingress controller
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 8000
+  # Allow from frontend
+  - from:
+    - podSelector:
+        matchLabels:
+          app: research-rag-frontend
+    ports:
+    - protocol: TCP
+      port: 8000
+  # Allow from Prometheus
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    ports:
+    - protocol: TCP
+      port: 9090
+  egress:
+  # Allow DNS
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+  # Allow external APIs (OpenAI, Anthropic)
+  - to:
+    - podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 443
+  # Allow Milvus (external managed)
+  - to:
+    - podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 19530
+  # Allow Neo4j (external managed)
+  - to:
+    - podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 7687
+  # Allow Redis (external managed)
+  - to:
+    - podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 6379
+
+---
+# ========================================
+# NETWORK POLICY - FRONTEND ISOLATION
+# ========================================
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: research-rag-frontend-netpol
+  namespace: research-rag
+spec:
+  podSelector:
+    matchLabels:
+      app: research-rag-frontend
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow from ingress controller
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 80
+  egress:
+  # Allow DNS
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+  # Allow backend API
+  - to:
+    - podSelector:
+        matchLabels:
+          app: research-rag-backend
+    ports:
+    - protocol: TCP
+      port: 8000
+
+---
+# ========================================
+# POD DISRUPTION BUDGET - BACKEND
+# ========================================
+
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: research-rag-backend-pdb
+  namespace: research-rag
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: research-rag-backend
+
+---
+# ========================================
+# POD DISRUPTION BUDGET - FRONTEND
+# ========================================
+
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: research-rag-frontend-pdb
+  namespace: research-rag
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: research-rag-frontend
+
+---
+# ========================================
+# SERVICE ACCOUNT - BACKEND
+# ========================================
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: research-rag-backend-sa
+  namespace: research-rag
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::<AWS_ACCOUNT_ID>:role/research-rag-backend-role
+
+---
+# ========================================
+# SERVICEMONITOR - PROMETHEUS SCRAPING
+# ========================================
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: research-rag-backend-monitor
+  namespace: research-rag
+  labels:
+    app: research-rag-backend
+spec:
+  selector:
+    matchLabels:
+      app: research-rag-backend
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics

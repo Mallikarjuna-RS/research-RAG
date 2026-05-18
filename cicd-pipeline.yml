@@ -1,0 +1,468 @@
+name: CI/CD Pipeline with RAGAS Evaluation
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: research-rag-prod
+  ECR_BACKEND_REPO: research-rag-prod/backend
+  ECR_FRONTEND_REPO: research-rag-prod/frontend
+  RAGAS_FAITHFULNESS_THRESHOLD: 0.95
+  RAGAS_ANSWER_RELEVANCY_THRESHOLD: 0.90
+  RAGAS_CONTEXT_PRECISION_THRESHOLD: 0.85
+
+jobs:
+  # ========================================
+  # BUILD & TEST BACKEND
+  # ========================================
+  
+  build-backend:
+    name: Build & Test Backend
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      working-directory: ./backend
+      run: |
+        pip install -r requirements.txt
+        pip install pytest pytest-cov pytest-asyncio black flake8 mypy
+    
+    - name: Code quality checks
+      working-directory: ./backend
+      run: |
+        # Format check
+        black --check .
+        
+        # Linting
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+        
+        # Type checking
+        mypy app/ --ignore-missing-imports
+    
+    - name: Run unit tests
+      working-directory: ./backend
+      env:
+        MILVUS_HOST: localhost
+        NEO4J_URI: bolt://localhost:7687
+        REDIS_HOST: localhost
+      run: |
+        pytest tests/unit/ \
+          --cov=app \
+          --cov-report=xml \
+          --cov-report=term-missing \
+          --junitxml=junit.xml \
+          -v
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        files: ./backend/coverage.xml
+        flags: backend
+        name: backend-coverage
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+    
+    - name: Build, tag, and push backend image
+      working-directory: ./backend
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        docker build \
+          --build-arg BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
+          --build-arg VCS_REF=${{ github.sha }} \
+          -t $ECR_REGISTRY/$ECR_BACKEND_REPO:$IMAGE_TAG \
+          -t $ECR_REGISTRY/$ECR_BACKEND_REPO:latest \
+          .
+        
+        docker push $ECR_REGISTRY/$ECR_BACKEND_REPO:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_BACKEND_REPO:latest
+    
+    outputs:
+      backend-image-tag: ${{ github.sha }}
+
+  # ========================================
+  # BUILD FRONTEND
+  # ========================================
+  
+  build-frontend:
+    name: Build Frontend
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: ./frontend/package-lock.json
+    
+    - name: Install dependencies
+      working-directory: ./frontend
+      run: npm ci
+    
+    - name: Lint
+      working-directory: ./frontend
+      run: npm run lint
+    
+    - name: Type check
+      working-directory: ./frontend
+      run: npm run type-check
+    
+    - name: Build
+      working-directory: ./frontend
+      env:
+        REACT_APP_API_URL: https://rag.production.com/api
+        REACT_APP_WS_URL: wss://rag.production.com/ws
+      run: npm run build
+    
+    - name: Run tests
+      working-directory: ./frontend
+      run: npm test -- --coverage --watchAll=false
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+    
+    - name: Build, tag, and push frontend image
+      working-directory: ./frontend
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        docker build \
+          -t $ECR_REGISTRY/$ECR_FRONTEND_REPO:$IMAGE_TAG \
+          -t $ECR_REGISTRY/$ECR_FRONTEND_REPO:latest \
+          .
+        
+        docker push $ECR_REGISTRY/$ECR_FRONTEND_REPO:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_FRONTEND_REPO:latest
+    
+    outputs:
+      frontend-image-tag: ${{ github.sha }}
+
+  # ========================================
+  # INTEGRATION TESTS
+  # ========================================
+  
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [build-backend]
+    
+    services:
+      milvus:
+        image: milvusdb/milvus:v2.3.10
+        ports:
+          - 19530:19530
+        options: >-
+          --health-cmd "curl -f http://localhost:9091/healthz"
+          --health-interval 30s
+          --health-timeout 10s
+          --health-retries 5
+      
+      neo4j:
+        image: neo4j:5.15.0
+        ports:
+          - 7687:7687
+        env:
+          NEO4J_AUTH: neo4j/testpassword
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"
+          --health-interval 30s
+          --health-timeout 10s
+          --health-retries 5
+      
+      redis:
+        image: redis:7.2-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      working-directory: ./backend
+      run: |
+        pip install -r requirements.txt
+        pip install pytest pytest-asyncio
+    
+    - name: Run integration tests
+      working-directory: ./backend
+      env:
+        MILVUS_HOST: localhost
+        MILVUS_PORT: 19530
+        NEO4J_URI: bolt://localhost:7687
+        NEO4J_USER: neo4j
+        NEO4J_PASSWORD: testpassword
+        REDIS_HOST: localhost
+        REDIS_PORT: 6379
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      run: |
+        pytest tests/integration/ \
+          --junitxml=junit-integration.xml \
+          -v
+
+  # ========================================
+  # RAGAS EVALUATION (QUALITY GATE)
+  # ========================================
+  
+  ragas-evaluation:
+    name: RAGAS RAG Evaluation
+    runs-on: ubuntu-latest
+    needs: [build-backend, integration-tests]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install RAGAS and dependencies
+      run: |
+        pip install ragas==0.1.7 datasets pandas openai anthropic langchain
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Deploy to staging environment
+      run: |
+        # Update kubeconfig
+        aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_REGION
+        
+        # Deploy to staging namespace
+        kubectl create namespace research-rag-staging --dry-run=client -o yaml | kubectl apply -f -
+        
+        # Deploy backend to staging
+        kubectl set image deployment/research-rag-backend \
+          backend=${{ steps.login-ecr.outputs.registry }}/$ECR_BACKEND_REPO:${{ github.sha }} \
+          -n research-rag-staging
+        
+        # Wait for rollout
+        kubectl rollout status deployment/research-rag-backend -n research-rag-staging --timeout=5m
+    
+    - name: Run RAGAS evaluation
+      id: ragas-eval
+      env:
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        STAGING_API_URL: ${{ secrets.STAGING_API_URL }}
+      run: |
+        python .github/scripts/run_ragas_evaluation.py \
+          --api-url $STAGING_API_URL \
+          --test-dataset ./tests/evaluation/test_dataset.json \
+          --output ./ragas_results.json \
+          --faithfulness-threshold $RAGAS_FAITHFULNESS_THRESHOLD \
+          --answer-relevancy-threshold $RAGAS_ANSWER_RELEVANCY_THRESHOLD \
+          --context-precision-threshold $RAGAS_CONTEXT_PRECISION_THRESHOLD
+    
+    - name: Parse RAGAS results
+      id: parse-results
+      run: |
+        # Extract metrics from results
+        FAITHFULNESS=$(jq -r '.faithfulness' ragas_results.json)
+        ANSWER_RELEVANCY=$(jq -r '.answer_relevancy' ragas_results.json)
+        CONTEXT_PRECISION=$(jq -r '.context_precision' ragas_results.json)
+        CONTEXT_RECALL=$(jq -r '.context_recall' ragas_results.json)
+        
+        echo "faithfulness=$FAITHFULNESS" >> $GITHUB_OUTPUT
+        echo "answer_relevancy=$ANSWER_RELEVANCY" >> $GITHUB_OUTPUT
+        echo "context_precision=$CONTEXT_PRECISION" >> $GITHUB_OUTPUT
+        echo "context_recall=$CONTEXT_RECALL" >> $GITHUB_OUTPUT
+        
+        # Check if thresholds are met
+        if (( $(echo "$FAITHFULNESS < $RAGAS_FAITHFULNESS_THRESHOLD" | bc -l) )); then
+          echo "❌ Faithfulness score $FAITHFULNESS is below threshold $RAGAS_FAITHFULNESS_THRESHOLD"
+          exit 1
+        fi
+        
+        if (( $(echo "$ANSWER_RELEVANCY < $RAGAS_ANSWER_RELEVANCY_THRESHOLD" | bc -l) )); then
+          echo "❌ Answer relevancy score $ANSWER_RELEVANCY is below threshold $RAGAS_ANSWER_RELEVANCY_THRESHOLD"
+          exit 1
+        fi
+        
+        if (( $(echo "$CONTEXT_PRECISION < $RAGAS_CONTEXT_PRECISION_THRESHOLD" | bc -l) )); then
+          echo "❌ Context precision score $CONTEXT_PRECISION is below threshold $RAGAS_CONTEXT_PRECISION_THRESHOLD"
+          exit 1
+        fi
+        
+        echo "✅ All RAGAS quality gates passed!"
+        echo "  - Faithfulness: $FAITHFULNESS (threshold: $RAGAS_FAITHFULNESS_THRESHOLD)"
+        echo "  - Answer Relevancy: $ANSWER_RELEVANCY (threshold: $RAGAS_ANSWER_RELEVANCY_THRESHOLD)"
+        echo "  - Context Precision: $CONTEXT_PRECISION (threshold: $RAGAS_CONTEXT_PRECISION_THRESHOLD)"
+        echo "  - Context Recall: $CONTEXT_RECALL"
+    
+    - name: Upload RAGAS results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: ragas-evaluation-results
+        path: ragas_results.json
+    
+    - name: Comment PR with RAGAS results
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const results = JSON.parse(fs.readFileSync('ragas_results.json', 'utf8'));
+          
+          const comment = `## 📊 RAGAS Evaluation Results
+          
+          | Metric | Score | Threshold | Status |
+          |--------|-------|-----------|--------|
+          | Faithfulness | ${results.faithfulness.toFixed(4)} | ${process.env.RAGAS_FAITHFULNESS_THRESHOLD} | ${results.faithfulness >= parseFloat(process.env.RAGAS_FAITHFULNESS_THRESHOLD) ? '✅' : '❌'} |
+          | Answer Relevancy | ${results.answer_relevancy.toFixed(4)} | ${process.env.RAGAS_ANSWER_RELEVANCY_THRESHOLD} | ${results.answer_relevancy >= parseFloat(process.env.RAGAS_ANSWER_RELEVANCY_THRESHOLD) ? '✅' : '❌'} |
+          | Context Precision | ${results.context_precision.toFixed(4)} | ${process.env.RAGAS_CONTEXT_PRECISION_THRESHOLD} | ${results.context_precision >= parseFloat(process.env.RAGAS_CONTEXT_PRECISION_THRESHOLD) ? '✅' : '❌'} |
+          | Context Recall | ${results.context_recall.toFixed(4)} | N/A | ℹ️ |
+          
+          **Overall Status:** ${results.passed ? '✅ Passed' : '❌ Failed'}
+          
+          View full results in the [Actions tab](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          `;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+    
+    outputs:
+      faithfulness: ${{ steps.parse-results.outputs.faithfulness }}
+      answer-relevancy: ${{ steps.parse-results.outputs.answer_relevancy }}
+      context-precision: ${{ steps.parse-results.outputs.context_precision }}
+
+  # ========================================
+  # DEPLOY TO PRODUCTION
+  # ========================================
+  
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build-backend, build-frontend, ragas-evaluation]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment:
+      name: production
+      url: https://rag.production.com
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_REGION
+    
+    - name: Deploy backend to production
+      run: |
+        kubectl set image deployment/research-rag-backend \
+          backend=${{ secrets.ECR_REGISTRY }}/$ECR_BACKEND_REPO:${{ needs.build-backend.outputs.backend-image-tag }} \
+          -n research-rag
+        
+        kubectl rollout status deployment/research-rag-backend -n research-rag --timeout=10m
+    
+    - name: Deploy frontend to production
+      run: |
+        kubectl set image deployment/research-rag-frontend \
+          frontend=${{ secrets.ECR_REGISTRY }}/$ECR_FRONTEND_REPO:${{ needs.build-frontend.outputs.frontend-image-tag }} \
+          -n research-rag
+        
+        kubectl rollout status deployment/research-rag-frontend -n research-rag --timeout=5m
+    
+    - name: Run smoke tests
+      run: |
+        python .github/scripts/smoke_tests.py --url https://rag.production.com
+    
+    - name: Create GitHub deployment
+      uses: actions/github-script@v7
+      with:
+        script: |
+          await github.rest.repos.createDeployment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            ref: context.sha,
+            environment: 'production',
+            description: 'Deployed to production with RAGAS faithfulness: ${{ needs.ragas-evaluation.outputs.faithfulness }}',
+            auto_merge: false,
+            required_contexts: []
+          });
+    
+    - name: Notify Slack
+      if: always()
+      uses: slackapi/slack-github-action@v1.25.0
+      with:
+        webhook: ${{ secrets.SLACK_WEBHOOK }}
+        webhook-type: incoming-webhook
+        payload: |
+          {
+            "text": "🚀 Production Deployment",
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "*Production Deployment*\n*Status:* ${{ job.status }}\n*Commit:* ${{ github.sha }}\n*RAGAS Faithfulness:* ${{ needs.ragas-evaluation.outputs.faithfulness }}"
+                }
+              }
+            ]
+          }

@@ -1,0 +1,271 @@
+groups:
+  
+  # ========================================
+  # RAG QUALITY METRICS ALERTS
+  # ========================================
+  
+  - name: rag_quality
+    interval: 60s
+    rules:
+      
+      # Faithfulness score dropping below threshold
+      - alert: RAGFaithfulnessLow
+        expr: ragas_faithfulness < 0.95
+        for: 5m
+        labels:
+          severity: critical
+          component: rag
+          metric: faithfulness
+        annotations:
+          summary: "RAG faithfulness score below 0.95"
+          description: "RAGAS faithfulness score is {{ $value | humanize }} (threshold: 0.95) for the last 5 minutes. This indicates answers may not be well-grounded in retrieved context."
+          runbook_url: "https://docs.research-rag.com/runbooks/faithfulness-low"
+      
+      # Answer relevancy dropping
+      - alert: RAGAnswerRelevancyLow
+        expr: ragas_answer_relevancy < 0.90
+        for: 5m
+        labels:
+          severity: warning
+          component: rag
+          metric: answer_relevancy
+        annotations:
+          summary: "RAG answer relevancy below 0.90"
+          description: "RAGAS answer relevancy is {{ $value | humanize }} (threshold: 0.90). Answers may not be directly addressing user questions."
+      
+      # Context precision issues
+      - alert: RAGContextPrecisionLow
+        expr: ragas_context_precision < 0.85
+        for: 5m
+        labels:
+          severity: warning
+          component: rag
+          metric: context_precision
+        annotations:
+          summary: "RAG context precision below 0.85"
+          description: "RAGAS context precision is {{ $value | humanize }} (threshold: 0.85). Retrieved context may contain too much noise."
+      
+      # Math accuracy (custom metric)
+      - alert: MathAccuracyLow
+        expr: rag_math_equation_accuracy < 0.98
+        for: 10m
+        labels:
+          severity: critical
+          component: math_renderer
+          metric: accuracy
+        annotations:
+          summary: "Math equation rendering accuracy below 98%"
+          description: "Math equation accuracy is {{ $value | humanizePercentage }}. LaTeX rendering or equation extraction may be failing."
+      
+      # Retrieval quality dropping
+      - alert: RetrievalRecallLow
+        expr: rag_retrieval_recall_at_10 < 0.85
+        for: 5m
+        labels:
+          severity: warning
+          component: retrieval
+          metric: recall
+        annotations:
+          summary: "Retrieval recall@10 below 85%"
+          description: "Dense retrieval recall@10 is {{ $value | humanizePercentage }}. Vector search quality may be degrading."
+
+  # ========================================
+  # PERFORMANCE ALERTS
+  # ========================================
+  
+  - name: rag_performance
+    interval: 30s
+    rules:
+      
+      # Search latency P99 too high
+      - alert: SearchLatencyHigh
+        expr: histogram_quantile(0.99, rate(rag_search_duration_seconds_bucket[5m])) > 2.0
+        for: 5m
+        labels:
+          severity: warning
+          component: search
+          metric: latency_p99
+        annotations:
+          summary: "Search P99 latency above 2 seconds"
+          description: "P99 search latency is {{ $value | humanizeDuration }}. User experience may be degraded."
+      
+      # Ingestion latency
+      - alert: IngestionLatencyHigh
+        expr: histogram_quantile(0.99, rate(rag_ingestion_duration_seconds_bucket[10m])) > 60.0
+        for: 10m
+        labels:
+          severity: warning
+          component: ingestion
+          metric: latency_p99
+        annotations:
+          summary: "Paper ingestion P99 latency above 60 seconds"
+          description: "P99 ingestion time is {{ $value | humanizeDuration }}. Batch ingestion may be slowing down."
+      
+      # High error rate
+      - alert: SearchErrorRateHigh
+        expr: rate(rag_search_errors_total[5m]) > 0.05
+        for: 3m
+        labels:
+          severity: critical
+          component: search
+          metric: error_rate
+        annotations:
+          summary: "Search error rate above 5%"
+          description: "Search error rate is {{ $value | humanizePercentage }}. Check backend logs and database connectivity."
+      
+      # Request rate limiting triggered
+      - alert: RateLimitTriggered
+        expr: rate(rag_rate_limit_triggered_total[5m]) > 10
+        for: 2m
+        labels:
+          severity: info
+          component: api
+          metric: rate_limit
+        annotations:
+          summary: "API rate limiting triggered frequently"
+          description: "Rate limit triggered {{ $value | humanize }} times/sec. Consider reviewing rate limit thresholds or investigating abuse."
+
+  # ========================================
+  # RESOURCE UTILIZATION ALERTS
+  # ========================================
+  
+  - name: resource_utilization
+    interval: 30s
+    rules:
+      
+      # Backend CPU high
+      - alert: BackendCPUHigh
+        expr: |
+          sum(rate(container_cpu_usage_seconds_total{namespace="research-rag",pod=~"research-rag-backend-.*"}[5m])) 
+          / sum(kube_pod_container_resource_limits{namespace="research-rag",pod=~"research-rag-backend-.*",resource="cpu"}) 
+          > 0.85
+        for: 10m
+        labels:
+          severity: warning
+          component: backend
+          metric: cpu
+        annotations:
+          summary: "Backend CPU utilization above 85%"
+          description: "Backend pods are using {{ $value | humanizePercentage }} of CPU limits. Consider scaling up."
+      
+      # Backend memory high
+      - alert: BackendMemoryHigh
+        expr: |
+          sum(container_memory_working_set_bytes{namespace="research-rag",pod=~"research-rag-backend-.*"}) 
+          / sum(kube_pod_container_resource_limits{namespace="research-rag",pod=~"research-rag-backend-.*",resource="memory"}) 
+          > 0.90
+        for: 5m
+        labels:
+          severity: critical
+          component: backend
+          metric: memory
+        annotations:
+          summary: "Backend memory utilization above 90%"
+          description: "Backend pods are using {{ $value | humanizePercentage }} of memory limits. Risk of OOM kills."
+      
+      # HPA at max replicas
+      - alert: HPAAtMaxReplicas
+        expr: |
+          kube_horizontalpodautoscaler_status_current_replicas{namespace="research-rag"} 
+          >= kube_horizontalpodautoscaler_spec_max_replicas{namespace="research-rag"}
+        for: 15m
+        labels:
+          severity: warning
+          component: autoscaling
+          metric: replicas
+        annotations:
+          summary: "HPA at maximum replica count"
+          description: "{{ $labels.horizontalpodautoscaler }} has been at max replicas for 15 minutes. Consider increasing max replicas or investigating load."
+
+  # ========================================
+  # DATABASE HEALTH ALERTS
+  # ========================================
+  
+  - name: database_health
+    interval: 60s
+    rules:
+      
+      # Milvus collection size
+      - alert: MilvusCollectionSizeLarge
+        expr: milvus_collection_entity_count{collection="research_chunks"} > 10000000
+        for: 1h
+        labels:
+          severity: info
+          component: milvus
+          metric: collection_size
+        annotations:
+          summary: "Milvus collection exceeds 10M vectors"
+          description: "Collection size is {{ $value | humanize }} vectors. Consider partitioning or archiving old data."
+      
+      # Milvus query latency
+      - alert: MilvusQueryLatencyHigh
+        expr: histogram_quantile(0.99, rate(milvus_query_duration_seconds_bucket[5m])) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          component: milvus
+          metric: query_latency
+        annotations:
+          summary: "Milvus P99 query latency above 500ms"
+          description: "Vector search P99 latency is {{ $value | humanizeDuration }}. Check index health and resource allocation."
+      
+      # Neo4j connection pool exhaustion
+      - alert: Neo4jConnectionPoolLow
+        expr: neo4j_pool_available_connections < 5
+        for: 5m
+        labels:
+          severity: warning
+          component: neo4j
+          metric: connections
+        annotations:
+          summary: "Neo4j connection pool below 5 available connections"
+          description: "Only {{ $value }} connections available. May cause request queueing."
+      
+      # Redis memory usage
+      - alert: RedisMemoryHigh
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.90
+        for: 10m
+        labels:
+          severity: critical
+          component: redis
+          metric: memory
+        annotations:
+          summary: "Redis memory usage above 90%"
+          description: "Redis is using {{ $value | humanizePercentage }} of max memory. Risk of evictions or OOM."
+
+  # ========================================
+  # COST OPTIMIZATION ALERTS
+  # ========================================
+  
+  - name: cost_optimization
+    interval: 300s
+    rules:
+      
+      # OpenAI API costs spiking
+      - alert: OpenAIAPICostSpike
+        expr: |
+          rate(rag_openai_api_cost_usd_total[1h]) 
+          > 1.5 * rate(rag_openai_api_cost_usd_total[24h] offset 1h)
+        for: 30m
+        labels:
+          severity: warning
+          component: api
+          metric: cost
+        annotations:
+          summary: "OpenAI API costs 50% above baseline"
+          description: "Current API spend rate is {{ $value | humanize }} USD/hour, 50% above 24h average. Investigate unusual usage patterns."
+      
+      # Underutilized pods (waste)
+      - alert: BackendPodsUnderutilized
+        expr: |
+          avg(rate(container_cpu_usage_seconds_total{namespace="research-rag",pod=~"research-rag-backend-.*"}[30m])) 
+          / avg(kube_pod_container_resource_requests{namespace="research-rag",pod=~"research-rag-backend-.*",resource="cpu"}) 
+          < 0.20
+        for: 2h
+        labels:
+          severity: info
+          component: backend
+          metric: utilization
+        annotations:
+          summary: "Backend pods underutilized (< 20% of requests)"
+          description: "Average CPU usage is {{ $value | humanizePercentage }} of requests. Consider scaling down or reducing resource requests."

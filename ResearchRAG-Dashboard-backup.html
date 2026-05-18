@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Rag Chatbot</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:#0d0f1a;font-family:'DM Sans',sans-serif;color:#f0f2f8;overflow:hidden}
+
+/* ─── Layout shell ─── */
+.shell{display:flex;height:100vh;background:linear-gradient(135deg,#0d0f1a 0%,#0a1628 40%,#0d1535 100%);position:relative}
+.shell::before{content:'';position:absolute;top:-80px;right:200px;width:320px;height:320px;background:radial-gradient(circle,rgba(0,140,255,0.18) 0%,transparent 70%);border-radius:50%;pointer-events:none}
+.shell::after{content:'';position:absolute;bottom:0;right:80px;width:200px;height:200px;background:radial-gradient(circle,rgba(100,0,180,0.15) 0%,transparent 70%);pointer-events:none}
+
+/* ─── Sidebar ─── */
+.sidebar{width:280px;flex-shrink:0;background:#111320;display:flex;flex-direction:column;padding:0;border-right:1px solid rgba(255,255,255,0.06);z-index:2}
+.sidebar-logo{display:flex;align-items:center;gap:10px;padding:22px 20px 18px;border-bottom:1px solid rgba(255,255,255,0.06)}
+.logo-hex{width:34px;height:34px;background:transparent;border:2px solid #00c2e0;display:flex;align-items:center;justify-content:center;clip-path:polygon(50% 0%,100% 25%,100% 75%,50% 100%,0% 75%,0% 25%);font-size:13px;color:#00c2e0}
+.logo-text{font-size:16px;font-weight:600;color:#fff;letter-spacing:.3px}
+
+/* Sidebar nav (chat list variant) */
+.sidebar-new-chat{margin:16px 14px 8px;background:linear-gradient(90deg,#00b4d8,#0077b6);border:none;border-radius:10px;color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:500;padding:11px 18px;cursor:pointer;display:flex;align-items:center;gap:8px;width:calc(100% - 28px);transition:opacity .2s}
+.sidebar-new-chat:hover{opacity:.88}
+.sidebar-section-label{font-size:10px;font-weight:600;color:#5a6080;letter-spacing:1.5px;text-transform:uppercase;padding:14px 18px 6px}
+.sidebar-chat-item{display:flex;align-items:center;gap:10px;padding:9px 14px;cursor:pointer;border-radius:8px;margin:1px 8px;transition:background .15s;position:relative}
+.sidebar-chat-item:hover,.sidebar-chat-item.active{background:rgba(255,255,255,0.07)}
+.sidebar-chat-item.active{background:rgba(0,180,216,0.12)}
+.chat-icon{width:28px;height:28px;border-radius:6px;background:rgba(255,255,255,0.07);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:13px}
+.chat-title{font-size:13px;color:#c8cde0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-dots{font-size:16px;color:#4a5070;cursor:pointer;letter-spacing:2px;flex-shrink:0}
+
+/* Sidebar nav (admin variant) */
+.nav-item{display:flex;align-items:center;gap:12px;padding:11px 18px;cursor:pointer;border-radius:10px;margin:2px 10px;transition:all .15s;color:#8090b0;font-size:14px;font-weight:500}
+.nav-item:hover{background:rgba(255,255,255,0.06);color:#d0d8f0}
+.nav-item.active{background:linear-gradient(90deg,#00b4d8,#0077b6);color:#fff}
+.nav-icon{width:20px;height:20px;flex-shrink:0;opacity:.8}
+
+.sidebar-footer{margin-top:auto;padding:16px 14px;border-top:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;gap:10px}
+.footer-avatar{width:36px;height:36px;border-radius:50%;object-fit:cover;flex-shrink:0}
+.footer-avatar-fallback{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#f97316,#f59e0b);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:#fff;flex-shrink:0}
+.footer-name{font-size:13px;font-weight:500;color:#d0d8f0}
+.footer-email{font-size:11px;color:#5a6080}
+.online-dot{width:9px;height:9px;background:#22c55e;border-radius:50%;border:2px solid #111320;position:absolute;bottom:0;right:0}
+
+/* ─── Main content ─── */
+.main{flex:1;background:#fff;border-radius:20px;margin:12px 12px 12px 0;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.4)}
+
+/* ─── Page display ─── */
+.page{display:none;flex:1;flex-direction:column;overflow:hidden}
+.page.active{display:flex}
+
+/* ─── CHAT PAGE ─── */
+.chat-header{padding:16px 24px;border-bottom:1px solid #f0f2f6;display:flex;align-items:center;justify-content:space-between;background:#fff;flex-shrink:0}
+.chat-user-info{display:flex;align-items:center;gap:12px}
+.chat-user-avatar{position:relative;width:40px;height:40px}
+.chat-user-avatar img,.chat-user-avatar .av{width:40px;height:40px;border-radius:50%;object-fit:cover}
+.chat-user-avatar .av{background:linear-gradient(135deg,#f97316,#f59e0b);display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:600;color:#fff}
+.chat-user-name{font-size:15px;font-weight:600;color:#1a1f35}
+.chat-user-email{font-size:12px;color:#8090b0}
+.btn-feedback{background:linear-gradient(90deg,#00b4d8,#0077b6);border:none;border-radius:8px;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:500;padding:9px 20px;cursor:pointer}
+.btn-feedback:hover{opacity:.9}
+
+.chat-body{flex:1;overflow-y:auto;padding:24px;display:flex;flex-direction:column;gap:20px;background:#fff}
+.chat-body::-webkit-scrollbar{width:4px}
+.chat-body::-webkit-scrollbar-thumb{background:#e0e4ef;border-radius:2px}
+
+.msg-time{font-size:11px;color:#b0b8d0;text-align:center;margin:4px 0 -8px}
+.msg-user-row{display:flex;align-items:flex-start;gap:12px}
+.msg-av{width:36px;height:36px;border-radius:50%;flex-shrink:0;object-fit:cover}
+.msg-av.fallback{background:linear-gradient(135deg,#f97316,#f59e0b);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:#fff}
+.file-bubble{border:2px dashed #00b4d8;border-radius:12px;padding:14px 18px;display:flex;align-items:center;gap:12px;background:#f8fcff;min-width:220px;max-width:300px;cursor:pointer}
+.file-icon{width:36px;height:36px;background:#1a1f35;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.file-name{font-size:13px;font-weight:600;color:#1a1f35}
+.file-sub{font-size:11px;color:#8090b0;margin-top:1px}
+.edit-btn{width:28px;height:28px;border-radius:50%;background:#fff;border:1px solid #e0e4ef;display:flex;align-items:center;justify-content:center;cursor:pointer;margin-left:8px;color:#8090b0;font-size:12px}
+
+.bot-bubble{background:linear-gradient(135deg,#f0f8ff,#e8f4fd);border-radius:4px 16px 16px 16px;padding:14px 18px;max-width:680px;position:relative}
+.bot-bubble::before{content:'';position:absolute;left:-1px;top:0;width:3px;height:100%;background:linear-gradient(180deg,#00b4d8,#0077b6);border-radius:3px 0 0 3px}
+.bot-hex{width:32px;height:32px;background:linear-gradient(135deg,#00b4d8,#0077b6);clip-path:polygon(50% 0%,100% 25%,100% 75%,50% 100%,0% 75%,0% 25%);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:11px;color:#fff;font-weight:700}
+.bot-row{display:flex;gap:12px;align-items:flex-start}
+.bot-text{font-size:14px;color:#2a3050;line-height:1.7}
+.bot-text ul{padding-left:16px;margin-top:8px}
+.bot-text li{margin-bottom:4px;font-size:14px;color:#2a3050}
+.bot-text strong{color:#1a1f35}
+.msg-actions{display:flex;gap:6px;margin-top:10px;align-items:center;justify-content:space-between}
+.msg-vote{display:flex;gap:6px}
+.msg-action-btn{background:none;border:none;cursor:pointer;font-size:16px;color:#a0a8c0;padding:2px 4px;transition:color .15s}
+.msg-action-btn:hover{color:#00b4d8}
+.msg-tools{display:flex;gap:8px}
+.tool-btn{width:28px;height:28px;border-radius:6px;background:#f0f4ff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:13px;color:#6070a0;transition:all .15s}
+.tool-btn:hover{background:#e0e8ff;color:#00b4d8}
+
+/* Upload page */
+.upload-page-body{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px;background:#fff}
+.upload-title{font-size:28px;font-weight:700;color:#1a1f35;text-align:center;line-height:1.3;margin-bottom:32px}
+.upload-zone{width:100%;max-width:540px;border:2px dashed #00b4d8;border-radius:16px;padding:50px 40px;background:#f8fcff;display:flex;flex-direction:column;align-items:center;gap:14px;cursor:pointer;transition:all .2s}
+.upload-zone:hover{background:#eef8fd;border-color:#0077b6}
+.upload-circle{width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,#00b4d8,#0077b6);display:flex;align-items:center;justify-content:center;font-size:22px;color:#fff}
+.upload-hint{font-size:14px;color:#6070a0;text-align:center;line-height:1.6}
+.upload-hint span{color:#00b4d8;font-weight:500;cursor:pointer}
+.upload-hint span:hover{text-decoration:underline}
+
+/* Chat input */
+.chat-input-bar{padding:14px 20px;border-top:1px solid #f0f2f6;background:#fff;display:flex;align-items:center;gap:12px;flex-shrink:0}
+.input-wrap{flex:1;display:flex;align-items:center;gap:10px;background:#f7f8fc;border:1px solid #e8ecf5;border-radius:12px;padding:10px 16px}
+.input-file-btn{color:#a0a8c0;font-size:16px;cursor:pointer;flex-shrink:0;transition:color .15s}
+.input-file-btn:hover{color:#00b4d8}
+.chat-input{flex:1;border:none;background:transparent;font-family:'DM Sans',sans-serif;font-size:14px;color:#2a3050;outline:none}
+.chat-input::placeholder{color:#b0b8d0}
+.send-btn{width:42px;height:42px;border-radius:50%;background:linear-gradient(135deg,#00b4d8,#0077b6);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;flex-shrink:0;transition:opacity .2s;box-shadow:0 4px 14px rgba(0,180,216,0.4)}
+.send-btn:hover{opacity:.9}
+
+/* ─── USER MANAGEMENT PAGE ─── */
+.um-header{padding:20px 28px;display:flex;align-items:center;justify-content:space-between;background:#fff;border-bottom:1px solid #f0f2f6;flex-shrink:0}
+.um-title{font-size:22px;font-weight:700;color:#1a1f35}
+.um-actions{display:flex;align-items:center;gap:12px}
+.search-box{display:flex;align-items:center;gap:8px;background:#f7f8fc;border:1px solid #e8ecf5;border-radius:10px;padding:8px 14px;width:200px}
+.search-box input{border:none;background:transparent;font-family:'DM Sans',sans-serif;font-size:13px;color:#2a3050;outline:none;width:100%}
+.search-box input::placeholder{color:#b0b8d0}
+.btn-requests{background:#fff;border:1.5px solid #e0e4ef;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:500;color:#2a3050;padding:8px 16px;cursor:pointer;display:flex;align-items:center;gap:6px}
+.req-badge{background:#00b4d8;color:#fff;border-radius:12px;padding:1px 7px;font-size:11px;font-weight:600}
+.btn-create{background:linear-gradient(90deg,#00b4d8,#0077b6);border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:500;color:#fff;padding:9px 20px;cursor:pointer}
+.btn-create:hover{opacity:.9}
+
+.um-table-wrap{flex:1;overflow-y:auto;padding:0 8px}
+.um-table-wrap::-webkit-scrollbar{width:4px}
+.um-table-wrap::-webkit-scrollbar-thumb{background:#e0e4ef;border-radius:2px}
+table.um-table{width:100%;border-collapse:collapse}
+table.um-table thead th{padding:12px 20px;font-size:12px;font-weight:600;color:#8090b0;text-align:left;border-bottom:2px solid #f0f2f6;white-space:nowrap;text-transform:uppercase;letter-spacing:.5px;position:sticky;top:0;background:#fff;z-index:1}
+table.um-table tbody tr{border-bottom:1px solid #f5f6fa;transition:background .12s;cursor:pointer}
+table.um-table tbody tr:hover{background:#fafbff}
+table.um-table tbody td{padding:13px 20px;font-size:13px;color:#2a3050;vertical-align:middle}
+.user-cell{display:flex;align-items:center;gap:12px}
+.user-avatar{width:36px;height:36px;border-radius:50%;object-fit:cover;flex-shrink:0}
+.user-name{font-size:14px;font-weight:500;color:#1a1f35}
+.status-badge{display:inline-flex;align-items:center;gap:5px;font-size:13px;font-weight:500}
+.status-dot{width:7px;height:7px;border-radius:50%}
+.status-badge.active{color:#10b981}
+.status-badge.active .status-dot{background:#10b981}
+.status-badge.inactive{color:#3b82f6}
+.status-badge.inactive .status-dot{background:#3b82f6}
+.action-cell{display:flex;align-items:center;gap:10px}
+.action-btn{background:none;border:none;cursor:pointer;font-size:16px;padding:4px;border-radius:6px;transition:all .15s}
+.action-btn.edit{color:#6070a0}
+.action-btn.edit:hover{color:#00b4d8;background:#f0f8ff}
+.action-btn.del{color:#e05050}
+.action-btn.del:hover{background:#fff0f0}
+
+/* ─── CONTEXT MENU ─── */
+.ctx-menu{position:absolute;background:#1e2238;border:1px solid rgba(255,255,255,0.1);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.4);padding:6px;min-width:160px;z-index:100;display:none}
+.ctx-menu.show{display:block}
+.ctx-item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:7px;font-size:13px;color:#c8cde0;cursor:pointer;transition:background .12s}
+.ctx-item:hover{background:rgba(255,255,255,0.07)}
+.ctx-item.danger{color:#f87171}
+.ctx-item.danger:hover{background:rgba(248,113,113,0.1)}
+.ctx-sep{height:1px;background:rgba(255,255,255,0.08);margin:4px 0}
+
+/* ─── Tabs ─── */
+.tabs{display:flex;padding:0 20px;border-bottom:2px solid #f0f2f6;background:#fff;flex-shrink:0}
+.tab{padding:12px 18px;font-size:13px;font-weight:500;color:#8090b0;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .15s}
+.tab:hover{color:#2a3050}
+.tab.active{color:#00b4d8;border-bottom-color:#00b4d8}
+
+/* ─── Animations ─── */
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.msg-user-row,.bot-row{animation:fadeIn .25s ease}
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+<!-- ═══ SIDEBAR ═══ -->
+<div class="sidebar" id="sidebar">
+
+  <div class="sidebar-logo">
+    <div class="logo-hex">⬡</div>
+    <span class="logo-text">Rag chatbot</span>
+  </div>
+
+  <!-- Chat sidebar (shown when on chat/upload page) -->
+  <div id="chatSidebar">
+    <button class="sidebar-new-chat" onclick="showPage('upload')">+ &nbsp;New Chat</button>
+    <div class="sidebar-section-label">Today</div>
+    <div class="sidebar-chat-item active" onclick="showPage('chat')">
+      <div class="chat-icon">💬</div>
+      <span class="chat-title">Chatbot Defination...</span>
+      <span class="chat-dots" onclick="showCtx(event,'chatCtx')">•••</span>
+    </div>
+    <div class="sidebar-chat-item" onclick="showPage('chat')">
+      <div class="chat-icon">💬</div>
+      <span class="chat-title">UI/UX Design Service...</span>
+      <span class="chat-dots" onclick="showCtx(event,'chatCtx')">•••</span>
+    </div>
+    <div class="sidebar-chat-item" onclick="showPage('chat')">
+      <div class="chat-icon">💬</div>
+      <span class="chat-title">How yo use chatgp...</span>
+      <span class="chat-dots" onclick="showCtx(event,'chatCtx')">•••</span>
+    </div>
+    <div class="sidebar-chat-item" onclick="showPage('chat')">
+      <div class="chat-icon">💬</div>
+      <span class="chat-title">If we have a lot of m...</span>
+      <span class="chat-dots" onclick="showCtx(event,'chatCtx')">•••</span>
+    </div>
+    <div class="sidebar-section-label">Yesterday</div>
+    <div class="sidebar-chat-item" onclick="showPage('chat')">
+      <div class="chat-icon">💬</div>
+      <span class="chat-title">Chatbot Defination...</span>
+      <span class="chat-dots" onclick="showCtx(event,'chatCtx')">•••</span>
+    </div>
+    <div class="sidebar-chat-item" onclick="showPage('chat')">
+      <div class="chat-icon">💬</div>
+      <span class="chat-title">Chatbot Defination...</span>
+      <span class="chat-dots" onclick="showCtx(event,'chatCtx')">•••</span>
+    </div>
+    <div class="sidebar-chat-item" onclick="showPage('chat')">
+      <div class="chat-icon">💬</div>
+      <span class="chat-title">Chatbot Defination...</span>
+      <span class="chat-dots" onclick="showCtx(event,'chatCtx')">•••</span>
+    </div>
+    <div class="sidebar-chat-item" onclick="showPage('chat')">
+      <div class="chat-icon">💬</div>
+      <span class="chat-title">Chatbot Defination...</span>
+      <span class="chat-dots" onclick="showCtx(event,'chatCtx')">•••</span>
+    </div>
+  </div>
+
+  <!-- Admin sidebar (shown when on users page) -->
+  <div id="adminSidebar" style="display:none">
+    <div style="height:16px"></div>
+    <div class="nav-item active" onclick="showPage('users')">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0-3-3.87"/></svg>
+      User Management
+    </div>
+    <div class="nav-item" onclick="alert('Resource Management')">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>
+      Resource Management
+    </div>
+    <div class="nav-item" onclick="alert('Subscription')">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12h8M12 8v8"/></svg>
+      Subscription
+    </div>
+    <div class="nav-item" onclick="alert('Customization')">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/></svg>
+      Customization
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="sidebar-footer">
+    <div class="footer-avatar-fallback" style="position:relative">
+      T
+      <span class="online-dot"></span>
+    </div>
+    <div>
+      <div class="footer-name">Tran Mau Tri Tam</div>
+      <div class="footer-email">tam@ui8.net</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MAIN ═══ -->
+<div class="main">
+
+  <!-- ── UPLOAD PAGE ── -->
+  <div class="page active" id="page-upload">
+    <div class="chat-header">
+      <div class="chat-user-info">
+        <div class="chat-user-avatar"><div class="av">T</div><span class="online-dot"></span></div>
+        <div><div class="chat-user-name">Tran Mau Tri Tam</div><div class="chat-user-email">tam@ui8.net</div></div>
+      </div>
+      <button class="btn-feedback">Give feedback</button>
+    </div>
+    <div class="upload-page-body">
+      <div class="upload-title">Please Upload the Documents<br>Before you ask Rag</div>
+      <div class="upload-zone" onclick="showPage('chat')">
+        <div class="upload-circle">↑</div>
+        <div class="upload-hint">Drag and Drop Or<br><span>Browse File</span> To Upload Document</div>
+      </div>
+    </div>
+    <div class="chat-input-bar">
+      <div class="input-wrap">
+        <span class="input-file-btn">📎</span>
+        <input class="chat-input" placeholder="Type a message to Rag." onkeydown="if(event.key==='Enter')showPage('chat')"/>
+      </div>
+      <button class="send-btn" onclick="showPage('chat')">➤</button>
+    </div>
+  </div>
+
+  <!-- ── CHAT PAGE ── -->
+  <div class="page" id="page-chat">
+    <div class="chat-header">
+      <div class="chat-user-info">
+        <div class="chat-user-avatar"><div class="av">T</div><span class="online-dot"></span></div>
+        <div><div class="chat-user-name">Tran Mau Tri Tam</div><div class="chat-user-email">tam@ui8.net</div></div>
+      </div>
+      <button class="btn-feedback">Give feedback</button>
+    </div>
+
+    <div class="chat-body" id="chatBody">
+      <!-- Message 1: file upload -->
+      <div class="msg-user-row">
+        <div class="av msg-av">T</div>
+        <div>
+          <div class="file-bubble">
+            <div class="file-icon"><span style="color:#ef4444;font-size:14px;font-weight:700">PDF</span></div>
+            <div><div class="file-name">Marketing.pdf</div><div class="file-sub">Marketing.pdf</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="msg-time">Just now</div>
+
+      <!-- Bot reply 1 -->
+      <div class="bot-row">
+        <div class="bot-hex">⬡</div>
+        <div class="bot-bubble">
+          <div class="bot-text">Of course! Please upload the project document, and I'll extract the relevant details for you.</div>
+          <div class="msg-actions">
+            <div class="msg-vote">
+              <button class="msg-action-btn">👍</button>
+              <button class="msg-action-btn">👎</button>
+            </div>
+            <div class="msg-tools">
+              <button class="tool-btn" title="Cite">🔗</button>
+              <button class="tool-btn" title="Copy">📋</button>
+              <button class="tool-btn" title="Regenerate">🔄</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="msg-time">12:00 pm</div>
+
+      <!-- Message 2: file upload -->
+      <div class="msg-user-row">
+        <div class="av msg-av">T</div>
+        <div>
+          <div style="display:flex;align-items:flex-end;gap:8px">
+            <div class="file-bubble">
+              <div class="file-icon"><span style="color:#ef4444;font-size:14px;font-weight:700">PDF</span></div>
+              <div><div class="file-name">Marketing.pdf</div><div class="file-sub">Marketing.pdf</div></div>
+            </div>
+            <button class="edit-btn">✏️</button>
+          </div>
+        </div>
+      </div>
+      <div class="msg-time">Just now</div>
+
+      <!-- Bot reply 2 -->
+      <div class="bot-row">
+        <div class="bot-hex">⬡</div>
+        <div class="bot-bubble">
+          <div class="bot-text">
+            <strong>The Latest Project Updates Include</strong>
+            <ul>
+              <li>Project milestones achieved</li>
+              <li>Team collaboration metrics</li>
+              <li>Key performance indicators (KPIs)</li>
+              <li>Is there anything specific you'd like more details on?</li>
+            </ul>
+          </div>
+          <div class="msg-actions">
+            <div class="msg-vote">
+              <button class="msg-action-btn">👍</button>
+              <button class="msg-action-btn">👎</button>
+            </div>
+            <div class="msg-tools">
+              <button class="tool-btn">🔗</button>
+              <button class="tool-btn">📋</button>
+              <button class="tool-btn">🔄</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="msg-time">12:00 pm</div>
+    </div>
+
+    <div class="chat-input-bar">
+      <div class="input-wrap">
+        <span class="input-file-btn">📎</span>
+        <input class="chat-input" id="chatInput" placeholder="Type a message to Rag." onkeydown="sendMsg(event)"/>
+      </div>
+      <button class="send-btn" onclick="sendMsg({key:'Enter'})">➤</button>
+    </div>
+  </div>
+
+  <!-- ── USER MANAGEMENT PAGE ── -->
+  <div class="page" id="page-users">
+    <div class="um-header">
+      <div class="um-title">User Management</div>
+      <div class="um-actions">
+        <div class="search-box">
+          <span style="color:#b0b8d0;font-size:14px">🔍</span>
+          <input placeholder="Search user..." oninput="filterUsers(this.value)"/>
+          <span style="color:#b0b8d0;font-size:13px">⚙</span>
+        </div>
+        <button class="btn-requests">New Rquests <span class="req-badge">10</span></button>
+        <button class="btn-create">Create user</button>
+      </div>
+    </div>
+
+    <div class="um-table-wrap">
+      <table class="um-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Status</th>
+            <th>Chat limit</th>
+            <th>Created date</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="userTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div><!-- /main -->
+</div><!-- /shell -->
+
+<!-- Context menu -->
+<div class="ctx-menu" id="chatCtx">
+  <div class="ctx-item">📤 Share</div>
+  <div class="ctx-item">✏️ Rename</div>
+  <div class="ctx-sep"></div>
+  <div class="ctx-item danger">🗑 Delete Chat</div>
+</div>
+
+<script>
+// ─── Users data ───────────────────────────────────────────────────────────────
+const USERS=[
+  {name:"Eleanor Pena",   email:"nvt.isst.nute@gmail.com",       status:"Active",   limit:24,date:"12-12-2024"},
+  {name:"Kristin Watson", email:"manhhachkt08@gmail.com",         status:"Inactive", limit:24,date:"12-12-2024"},
+  {name:"Jerome Bell",    email:"tienlapspktnd@gmail.com",        status:"Active",   limit:24,date:"12-12-2024"},
+  {name:"Ronald Richards",email:"thuhang.nute@gmail.com",        status:"Inactive", limit:24,date:"12-12-2024"},
+  {name:"Savannah Nguyen",email:"vuhaithuongnute@gmail.com",      status:"Active",   limit:24,date:"12-12-2024"},
+  {name:"Brooklyn Simmons",email:"trungkienspktnd@gamail.com",   status:"Active",   limit:24,date:"12-12-2024"},
+  {name:"Cody Fisher",    email:"danghoang87hl@gmail.com",        status:"Inactive", limit:24,date:"12-12-2024"},
+  {name:"Jacob Jones",    email:"trungkienspktnd@gamail.com",     status:"Active",   limit:24,date:"12-12-2024"},
+  {name:"Floyd Miles",    email:"binhan628@gmail.com",            status:"Active",   limit:24,date:"12-12-2024"},
+  {name:"Leslie Alexander",email:"tranthuy.nute@gmail.com",      status:"Inactive", limit:24,date:"12-12-2024"},
+  {name:"Ralph Edwards",  email:"ckctm12@gmail.com",             status:"Active",   limit:24,date:"12-12-2024"},
+];
+
+const COLORS=["#f97316","#3b82f6","#8b5cf6","#ec4899","#10b981","#f59e0b","#06b6d4","#6366f1","#ef4444","#14b8a6","#f97316"];
+
+function initials(name){return name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()}
+
+function renderUsers(users){
+  const tbody=document.getElementById('userTableBody');
+  tbody.innerHTML=users.map((u,i)=>`
+    <tr>
+      <td>
+        <div class="user-cell">
+          <div style="width:36px;height:36px;border-radius:50%;background:${COLORS[i%COLORS.length]};display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:#fff;flex-shrink:0">${initials(u.name)}</div>
+          <span class="user-name">${u.name}</span>
+        </div>
+      </td>
+      <td style="color:#6070a0">${u.email}</td>
+      <td>
+        <span class="status-badge ${u.status.toLowerCase()}">
+          <span class="status-dot"></span>${u.status}
+        </span>
+      </td>
+      <td style="font-weight:500">${u.limit}</td>
+      <td style="color:#8090b0">${u.date}</td>
+      <td>
+        <div class="action-cell">
+          <button class="action-btn edit" title="Edit">✏️</button>
+          <button class="action-btn del" title="Delete">🗑</button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function filterUsers(q){
+  const filtered=USERS.filter(u=>u.name.toLowerCase().includes(q.toLowerCase())||u.email.toLowerCase().includes(q.toLowerCase()));
+  renderUsers(filtered);
+}
+
+// ─── Page navigation ──────────────────────────────────────────────────────────
+function showPage(page){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.getElementById('page-'+page).classList.add('active');
+
+  const isAdmin=page==='users';
+  document.getElementById('chatSidebar').style.display=isAdmin?'none':'block';
+  document.getElementById('adminSidebar').style.display=isAdmin?'block':'none';
+
+  if(page==='chat'){
+    // mark first chat item active
+    document.querySelectorAll('.sidebar-chat-item').forEach((el,i)=>el.classList.toggle('active',i===0));
+  }
+  if(page==='users') renderUsers(USERS);
+  closeCtx();
+}
+
+// ─── Chat send ────────────────────────────────────────────────────────────────
+function sendMsg(e){
+  if(e.key!=='Enter')return;
+  const inp=document.getElementById('chatInput');
+  const text=inp.value.trim();
+  if(!text)return;
+  const body=document.getElementById('chatBody');
+
+  // User message
+  const userRow=document.createElement('div');
+  userRow.className='msg-user-row';
+  userRow.innerHTML=`<div class="av msg-av">T</div><div style="background:#f0f4ff;border-radius:16px 16px 4px 16px;padding:12px 16px;max-width:500px;font-size:14px;color:#2a3050;line-height:1.6">${text}</div>`;
+  body.appendChild(userRow);
+
+  // Time
+  const t=document.createElement('div');
+  t.className='msg-time';
+  t.textContent='Just now';
+  body.appendChild(t);
+
+  inp.value='';
+
+  // Bot reply
+  setTimeout(()=>{
+    const botRow=document.createElement('div');
+    botRow.className='bot-row';
+    botRow.innerHTML=`
+      <div class="bot-hex">⬡</div>
+      <div class="bot-bubble">
+        <div class="bot-text">I've analyzed your query about "<strong>${text.slice(0,40)}${text.length>40?'…':''}</strong>". Based on the uploaded documents, here are the key findings from the corpus. Would you like me to go deeper into any specific section?</div>
+        <div class="msg-actions">
+          <div class="msg-vote"><button class="msg-action-btn">👍</button><button class="msg-action-btn">👎</button></div>
+          <div class="msg-tools"><button class="tool-btn">🔗</button><button class="tool-btn">📋</button><button class="tool-btn">🔄</button></div>
+        </div>
+      </div>`;
+    body.appendChild(botRow);
+    body.scrollTop=body.scrollHeight;
+  },600);
+
+  body.scrollTop=body.scrollHeight;
+}
+
+// ─── Context menu ─────────────────────────────────────────────────────────────
+function showCtx(e,id){
+  e.stopPropagation();
+  const menu=document.getElementById(id);
+  menu.style.top=e.clientY+'px';
+  menu.style.left=e.clientX+'px';
+  menu.style.position='fixed';
+  menu.classList.add('show');
+}
+function closeCtx(){document.querySelectorAll('.ctx-menu').forEach(m=>m.classList.remove('show'))}
+document.addEventListener('click',closeCtx);
+
+// ─── Keyboard shortcut: press U to go to Users, C for Chat ───────────────────
+document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT')return;
+  if(e.key==='u'||e.key==='U')showPage('users');
+  if(e.key==='c'||e.key==='C')showPage('chat');
+  if(e.key==='n'||e.key==='N')showPage('upload');
+});
+
+// Add "User Management" link to admin sidebar to demo toggle
+document.querySelector('#adminSidebar .nav-item').addEventListener('click',()=>showPage('users'));
+
+// ─── Demo nav: right-click sidebar logo to switch to admin view ───────────────
+document.querySelector('.sidebar-logo').addEventListener('contextmenu',e=>{
+  e.preventDefault();showPage('users');
+});
+document.querySelector('.sidebar-logo').addEventListener('click',()=>showPage('chat'));
+
+// Add small UI toggle
+const toggle=document.createElement('div');
+toggle.style.cssText='position:fixed;bottom:16px;right:16px;display:flex;gap:8px;z-index:999';
+toggle.innerHTML=`
+  <button onclick="showPage('upload')" style="background:#1e2238;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#c8cde0;font-family:DM Sans,sans-serif;font-size:11px;padding:6px 12px;cursor:pointer">Upload</button>
+  <button onclick="showPage('chat')" style="background:#1e2238;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#c8cde0;font-family:DM Sans,sans-serif;font-size:11px;padding:6px 12px;cursor:pointer">Chat</button>
+  <button onclick="showPage('users')" style="background:#1e2238;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#c8cde0;font-family:DM Sans,sans-serif;font-size:11px;padding:6px 12px;cursor:pointer">Users</button>`;
+document.body.appendChild(toggle);
+</script>
+</body>
+</html>

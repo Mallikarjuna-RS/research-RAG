@@ -1,0 +1,47 @@
+{
+  "mcpServers": {
+    "doc-parser": {
+      "command": "python",
+      "args": ["mcp_servers/doc_parser.py"],
+      "env": {
+        "MINERU_API_KEY": "${MINERU_API_KEY}",
+        "LAYOUTLM_MODEL_PATH": "${LAYOUTLM_PATH}",
+        "MAX_WORKERS": "4"
+      }
+    },
+    "vector-db": {
+      "command": "python",
+      "args": ["mcp_servers/vector_db.py"],
+      "env": {
+        "MILVUS_URI": "${MILVUS_URI}",
+        "MILVUS_TOKEN": "${MILVUS_TOKEN}",
+        "COLLECTION_NAME": "research_chunks"
+      }
+    },
+    "math-renderer": {
+      "command": "python",
+      "args": ["mcp_servers/math_renderer.py"],
+      "env": {
+        "KATEX_SERVER_URL": "http://localhost:3000",
+        "SYMPY_TIMEOUT": "30"
+      }
+    },
+    "knowledge-graph": {
+      "command": "python",
+      "args": ["mcp_servers/kg_builder.py"],
+      "env": {
+        "NEO4J_URI": "${NEO4J_URI}",
+        "NEO4J_USER": "${NEO4J_USER}",
+        "NEO4J_PASSWORD": "${NEO4J_PASSWORD}"
+      }
+    },
+    "evaluator": {
+      "command": "python",
+      "args": ["mcp_servers/evaluator.py"],
+      "env": {
+        "RAGAS_API_KEY": "${RAGAS_API_KEY}",
+        "OPENAI_API_KEY": "${OPENAI_API_KEY}"
+      }
+    }
+  }
+}

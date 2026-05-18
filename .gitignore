@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+.venv/
+venv/
+*.egg-info/
+
+# Zip archives (large, already extracted)
+*.zip
+
+# Uploads / runtime data
+uploads/
+data/
+logs/
+
+# OS
+.DS_Store
+Thumbs.db

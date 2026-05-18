@@ -1,0 +1,156 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'research-rag-prod'
+    environment: 'production'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
+
+# Load rules once and periodically evaluate them
+rule_files:
+  - "alerts.yml"
+
+# Scrape configurations
+scrape_configs:
+  
+  # ========================================
+  # KUBERNETES API SERVER
+  # ========================================
+  
+  - job_name: 'kubernetes-apiservers'
+    kubernetes_sd_configs:
+      - role: endpoints
+    scheme: https
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+        action: keep
+        regex: default;kubernetes;https
+
+  # ========================================
+  # KUBERNETES NODES
+  # ========================================
+  
+  - job_name: 'kubernetes-nodes'
+    kubernetes_sd_configs:
+      - role: node
+    scheme: https
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+
+  # ========================================
+  # KUBERNETES PODS
+  # ========================================
+  
+  - job_name: 'kubernetes-pods'
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+      - source_labels: [__meta_kubernetes_namespace]
+        action: replace
+        target_label: kubernetes_namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: replace
+        target_label: kubernetes_pod_name
+
+  # ========================================
+  # BACKEND API METRICS
+  # ========================================
+  
+  - job_name: 'research-rag-backend'
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+            - research-rag
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: research-rag-backend
+      - source_labels: [__meta_kubernetes_pod_container_port_number]
+        action: keep
+        regex: 9090
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+    metric_relabel_configs:
+      # Keep custom RAG metrics
+      - source_labels: [__name__]
+        regex: '(rag_.*|ragas_.*|search_.*|ingestion_.*)'
+        action: keep
+
+  # ========================================
+  # MILVUS METRICS
+  # ========================================
+  
+  - job_name: 'milvus'
+    static_configs:
+      - targets: ['milvus.zillizcloud.com:9091']
+        labels:
+          service: 'milvus'
+          environment: 'production'
+
+  # ========================================
+  # NEO4J METRICS
+  # ========================================
+  
+  - job_name: 'neo4j'
+    static_configs:
+      - targets: ['xxxxx.databases.neo4j.io:2004']
+        labels:
+          service: 'neo4j'
+          environment: 'production'
+    metrics_path: /metrics
+
+  # ========================================
+  # REDIS METRICS (via redis_exporter)
+  # ========================================
+  
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+        labels:
+          service: 'redis'
+          environment: 'production'
+
+  # ========================================
+  # NODE EXPORTER
+  # ========================================
+  
+  - job_name: 'node-exporter'
+    kubernetes_sd_configs:
+      - role: node
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(.*):10250'
+        replacement: '${1}:9100'
+        target_label: __address__
+      - source_labels: [__meta_kubernetes_node_name]
+        target_label: node

@@ -1,0 +1,304 @@
+# ========================================
+# ENHANCED PROMETHEUS METRICS
+# Phase 6: Additional monitoring requirements
+# ========================================
+
+groups:
+  
+  # ========================================
+  # LATENCY & PERFORMANCE ALERTS
+  # ========================================
+  
+  - name: latency_performance
+    interval: 30s
+    rules:
+      
+      # API Latency P99 > 5s (CRITICAL)
+      - alert: APILatencyP99Critical
+        expr: histogram_quantile(0.99, rate(rag_search_duration_seconds_bucket[5m])) > 5.0
+        for: 3m
+        labels:
+          severity: critical
+          component: api
+          metric: latency_p99
+        annotations:
+          summary: "API P99 latency exceeds 5 seconds"
+          description: "P99 search latency is {{ $value | humanizeDuration }} (threshold: 5s). Immediate investigation required."
+          runbook_url: "https://docs.research-rag.com/runbooks/latency-critical"
+      
+      # Error Rate > 1% (CRITICAL)
+      - alert: APIErrorRateHigh
+        expr: |
+          sum(rate(rag_search_errors_total[5m])) 
+          / sum(rate(rag_search_requests_total[5m])) 
+          > 0.01
+        for: 2m
+        labels:
+          severity: critical
+          component: api
+          metric: error_rate
+        annotations:
+          summary: "API error rate exceeds 1%"
+          description: "Error rate is {{ $value | humanizePercentage }} (threshold: 1%). Check backend logs immediately."
+      
+      # Embedding Queue Depth > 1000
+      - alert: EmbeddingQueueDepthHigh
+        expr: rag_embedding_queue_depth > 1000
+        for: 5m
+        labels:
+          severity: warning
+          component: embedding
+          metric: queue_depth
+        annotations:
+          summary: "Embedding queue depth exceeds 1000"
+          description: "Queue has {{ $value | humanize }} pending items. May indicate processing bottleneck."
+      
+      # Vector DB Query Time > 500ms
+      - alert: VectorDBQuerySlow
+        expr: histogram_quantile(0.95, rate(milvus_query_duration_seconds_bucket[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          component: milvus
+          metric: query_latency
+        annotations:
+          summary: "Milvus P95 query time exceeds 500ms"
+          description: "Vector search P95 latency is {{ $value | humanizeDuration }} (threshold: 500ms). Check index health."
+  
+  # ========================================
+  # ACCURACY & QUALITY ALERTS (Phase 6)
+  # ========================================
+  
+  - name: accuracy_quality
+    interval: 60s
+    rules:
+      
+      # Faithfulness Score < 0.90 (CRITICAL)
+      - alert: FaithfulnessScoreLow
+        expr: ragas_faithfulness < 0.90
+        for: 5m
+        labels:
+          severity: critical
+          component: rag
+          metric: faithfulness
+        annotations:
+          summary: "Faithfulness score below 0.90"
+          description: "RAGAS faithfulness is {{ $value | humanize }} (threshold: 0.90). Answers may not be grounded in context."
+          remediation: "Check retrieval quality and LLM prompts. Consider re-evaluating the system."
+      
+      # Math Accuracy < 0.90 (CRITICAL)
+      - alert: MathAccuracyLow
+        expr: rag_math_equation_accuracy < 0.90
+        for: 10m
+        labels:
+          severity: critical
+          component: math_renderer
+          metric: accuracy
+        annotations:
+          summary: "Math equation accuracy below 90%"
+          description: "Math rendering accuracy is {{ $value | humanizePercentage }} (threshold: 90%). LaTeX extraction may be failing."
+  
+  # ========================================
+  # GPU UTILIZATION ALERTS (Phase 6)
+  # ========================================
+  
+  - name: gpu_utilization
+    interval: 30s
+    rules:
+      
+      # GPU Utilization > 95% for 10 minutes
+      - alert: GPUUtilizationSustainedHigh
+        expr: |
+          avg(DCGM_FI_DEV_GPU_UTIL) by (gpu, instance) > 95
+        for: 10m
+        labels:
+          severity: warning
+          component: gpu
+          metric: utilization
+        annotations:
+          summary: "GPU utilization above 95% for 10 minutes"
+          description: "GPU {{ $labels.gpu }} on {{ $labels.instance }} at {{ $value }}% utilization. May need additional capacity."
+      
+      # GPU Memory Usage > 90%
+      - alert: GPUMemoryHigh
+        expr: |
+          (DCGM_FI_DEV_FB_USED / DCGM_FI_DEV_FB_FREE) * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          component: gpu
+          metric: memory
+        annotations:
+          summary: "GPU memory usage above 90%"
+          description: "GPU {{ $labels.gpu }} memory at {{ $value }}%. Risk of OOM errors."
+      
+      # GPU Temperature > 85C
+      - alert: GPUTemperatureHigh
+        expr: DCGM_FI_DEV_GPU_TEMP > 85
+        for: 5m
+        labels:
+          severity: warning
+          component: gpu
+          metric: temperature
+        annotations:
+          summary: "GPU temperature exceeds 85°C"
+          description: "GPU {{ $labels.gpu }} temperature at {{ $value }}°C. Check cooling systems."
+  
+  # ========================================
+  # SECURITY & COMPLIANCE ALERTS (Phase 6)
+  # ========================================
+  
+  - name: security_compliance
+    interval: 60s
+    rules:
+      
+      # Unusual authentication failures
+      - alert: AuthenticationFailureSpike
+        expr: |
+          rate(rag_auth_failures_total[5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+          component: security
+          metric: auth_failures
+        annotations:
+          summary: "High authentication failure rate"
+          description: "{{ $value | humanize }} auth failures/sec. Possible brute-force attack."
+      
+      # Unauthorized access attempts
+      - alert: UnauthorizedAccessAttempts
+        expr: |
+          rate(rag_unauthorized_access_total[5m]) > 5
+        for: 3m
+        labels:
+          severity: critical
+          component: security
+          metric: unauthorized_access
+        annotations:
+          summary: "High rate of unauthorized access attempts"
+          description: "{{ $value | humanize }} unauthorized requests/sec. Possible security breach."
+      
+      # Data export spike (GDPR monitoring)
+      - alert: DataExportSpike
+        expr: |
+          rate(rag_gdpr_exports_total[1h]) > 
+          2 * rate(rag_gdpr_exports_total[24h] offset 1h)
+        for: 30m
+        labels:
+          severity: info
+          component: compliance
+          metric: data_exports
+        annotations:
+          summary: "Unusual data export activity"
+          description: "Data export rate is {{ $value | humanize }}/hour, 2x baseline. Monitoring for compliance."
+      
+      # Missing audit logs
+      - alert: AuditLogGap
+        expr: |
+          increase(rag_audit_log_entries_total[5m]) == 0
+          and
+          increase(rag_api_requests_total[5m]) > 0
+        for: 10m
+        labels:
+          severity: critical
+          component: compliance
+          metric: audit_logs
+        annotations:
+          summary: "Audit logging may have failed"
+          description: "API requests detected but no audit logs. Compliance violation."
+  
+  # ========================================
+  # PAGERDUTY SEVERITY MAPPING
+  # ========================================
+  
+  - name: pagerduty_routing
+    interval: 60s
+    rules:
+      
+      # P1: Critical - API down, data corruption, security breach
+      - alert: P1Critical
+        expr: |
+          ALERTS{alertname=~"APIDown|DataCorruption|SecurityBreach|UnauthorizedAccessAttempts"}
+        labels:
+          severity: p1
+          pagerduty: critical
+        annotations:
+          summary: "P1 Critical Alert - Immediate Response Required"
+          escalation: "Page on-call immediately"
+      
+      # P2: High - Latency degradation, accuracy drop
+      - alert: P2High
+        expr: |
+          ALERTS{alertname=~"APILatencyP99Critical|FaithfulnessScoreLow|MathAccuracyLow|APIErrorRateHigh"}
+        labels:
+          severity: p2
+          pagerduty: high
+        annotations:
+          summary: "P2 High Alert - Action Required Within 1 Hour"
+          escalation: "Notify team channel"
+      
+      # P3: Medium - Capacity warnings, version drift
+      - alert: P3Medium
+        expr: |
+          ALERTS{alertname=~"GPUUtilizationSustainedHigh|HPAAtMaxReplicas|EmbeddingQueueDepthHigh"}
+        labels:
+          severity: p3
+          pagerduty: medium
+        annotations:
+          summary: "P3 Medium Alert - Action Required Within 24 Hours"
+          escalation: "Create ticket for investigation"
+
+# ========================================
+# CUSTOM METRIC DEFINITIONS
+# ========================================
+
+# These metrics should be exposed by the backend application:
+#
+# # Embedding queue (Phase 6 requirement)
+# rag_embedding_queue_depth = Gauge(
+#     'rag_embedding_queue_depth',
+#     'Number of documents waiting for embedding generation'
+# )
+#
+# # GPU metrics (via NVIDIA DCGM exporter)
+# # Already provided by DCGM_FI_* metrics
+#
+# # Security metrics (Phase 6 requirement)
+# rag_auth_failures_total = Counter(
+#     'rag_auth_failures_total',
+#     'Total authentication failures',
+#     ['method', 'reason']
+# )
+#
+# rag_unauthorized_access_total = Counter(
+#     'rag_unauthorized_access_total',
+#     'Total unauthorized access attempts',
+#     ['endpoint', 'user_id']
+# )
+#
+# # GDPR compliance metrics (Phase 6 requirement)
+# rag_gdpr_exports_total = Counter(
+#     'rag_gdpr_exports_total',
+#     'Total GDPR data exports',
+#     ['user_id']
+# )
+#
+# rag_gdpr_deletions_total = Counter(
+#     'rag_gdpr_deletions_total',
+#     'Total GDPR data deletions',
+#     ['user_id', 'reason']
+# )
+#
+# # Audit logging (Phase 6 requirement)
+# rag_audit_log_entries_total = Counter(
+#     'rag_audit_log_entries_total',
+#     'Total audit log entries',
+#     ['action', 'resource_type']
+# )
+#
+# # API request tracking
+# rag_api_requests_total = Counter(
+#     'rag_api_requests_total',
+#     'Total API requests',
+#     ['method', 'endpoint', 'status']
+# )

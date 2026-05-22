@@ -246,7 +246,7 @@ html,body{height:100%;background:#070810;font-family:'DM Sans',sans-serif;color:
       <div class="upload-title">Upload a Document<br>to start your Research Rag session</div>
       <div class="upload-zone" id="uploadZone" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)" onclick="document.getElementById('fileInput').click()">
         <div class="upload-circle">&#8593;</div>
-        <div class="upload-hint">Drag and Drop Or<br><span onclick="event.stopPropagation();document.getElementById('fileInput').click()">Browse File</span> To Upload Document</div>
+        <div class="upload-hint">Drag &amp; Drop files or a folder here<br><span onclick="event.stopPropagation();document.getElementById('fileInput').click()">Browse Files</span> &nbsp;·&nbsp; <span onclick="event.stopPropagation();document.getElementById('folderInput').click()">Browse Folder</span><br><small style="color:#3a5060;font-size:11px">Supports multiple PDFs · DOCX · TEX</small></div>
       </div>
       <div class="upload-progress-wrap" id="uploadProgressWrap">
         <div class="upload-status-text" id="uploadStatusText">Parsing document...</div>
@@ -258,7 +258,8 @@ html,body{height:100%;background:#070810;font-family:'DM Sans',sans-serif;color:
         </div>
         <div id="uploadLog" class="ingest-log"></div>
       </div>
-      <input type="file" id="fileInput" accept=".pdf,.docx,.tex" style="display:none" onchange="handleFileSelect(this.files)"/>
+      <input type="file" id="fileInput" accept=".pdf,.docx,.tex" multiple style="display:none" onchange="handleFileSelect(this.files)"/>
+      <input type="file" id="folderInput" webkitdirectory mozdirectory multiple style="display:none" onchange="handleFileSelect(this.files)"/>
     </div>
     <div class="input-bar">
       <div class="input-wrap">
@@ -286,7 +287,8 @@ html,body{height:100%;background:#070810;font-family:'DM Sans',sans-serif;color:
       </div>
       <button class="send-btn" id="sendBtn" onclick="handleChatEnter()">&#10148;</button>
     </div>
-    <input type="file" id="chatFileInput" accept=".pdf,.docx,.tex" style="display:none" onchange="handleChatFileUpload(this.files)"/>
+    <input type="file" id="chatFileInput" accept=".pdf,.docx,.tex" multiple style="display:none" onchange="handleChatFileUpload(this.files)"/>
+    <input type="file" id="chatFolderInput" webkitdirectory mozdirectory multiple style="display:none" onchange="handleChatFileUpload(this.files)"/>
   </div>
 
   <!-- USERS PAGE -->
@@ -481,11 +483,15 @@ function onDrop(e){e.preventDefault();document.getElementById('uploadZone').clas
 
 async function handleFileSelect(files){
   if(!files||!files.length)return;
-  const file=files[0];
-  const ext=file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
-  if(!['.pdf','.docx','.tex'].includes(ext)){showToast('e','Unsupported format. Use PDF, DOCX, or TEX.');return;}
-  if(file.size>100*1024*1024){showToast('w','File too large. Max 100MB.');return;}
-  ST.files.push(file.name);
+
+  // Filter to supported formats only
+  const allowed=['.pdf','.docx','.tex'];
+  const valid=Array.from(files).filter(f=>{
+    const ext=f.name.toLowerCase().slice(f.name.lastIndexOf('.'));
+    return allowed.includes(ext) && f.size<=100*1024*1024;
+  });
+  if(!valid.length){showToast('e','No supported files found (PDF, DOCX, TEX, max 100MB each).');return;}
+  if(valid.length<files.length) showToast('w',(files.length-valid.length)+' file(s) skipped (unsupported or too large).');
 
   const wrap=document.getElementById('uploadProgressWrap');
   const fill=document.getElementById('uploadProgressFill');
@@ -495,71 +501,90 @@ async function handleFileSelect(files){
 
   const log=(msg,cls='info')=>{
     const d=document.createElement('div'); d.className='log-line '+cls;
-    const now=new Date().toLocaleTimeString();
-    d.textContent='['+now+'] '+msg; logEl.appendChild(d); logEl.scrollTop=logEl.scrollHeight;
+    d.textContent='['+new Date().toLocaleTimeString()+'] '+msg;
+    logEl.appendChild(d); logEl.scrollTop=logEl.scrollHeight;
   };
 
-  const stages=['Stage 1: Document Parsing','Stage 2: Content Enrichment','Stage 3: Embedding Generation','Stage 4: Vector Storage','Stage 5: Knowledge Graph'];
+  const stages=['Stage 1: Document Parsing','Stage 2: Text Extraction','Stage 3: Chunking & Keywords','Stage 4: Indexing','Stage 5: Knowledge Graph'];
   const stageLog=[
-    ['Detecting layout regions (LayoutLMv3)...','Extracting equations (YOLOv8 + LaTeX OCR)...','Extracting tables and algorithms...'],
-    ['Generating surrounding context (±500 chars)...','Extracting keywords (TF-IDF)...','Resolving cross-references...'],
-    ['Embedding text -> text-embedding-3-large (1536d)...','Embedding equations -> math-aware-embedder (384d)...','Batch size: 32, normalizing to unit vectors...'],
-    ['Inserting chunks into Milvus (IVF_FLAT nlist=4096)...','Building BM25 sparse inverted index...','Hybrid search weights: 0.7 dense + 0.3 sparse'],
-    ['Creating Paper -> Section -> Chunk nodes (Neo4j)...','Building CITES, REFERENCES, USED_IN edges...','Knowledge graph construction complete'],
+    ['Detecting layout regions...','Extracting equations & tables...','Parsing document structure...'],
+    ['Reading page text with pypdf...','Cleaning whitespace & formatting...','Extracting content per page...'],
+    ['Splitting into semantic chunks...','Extracting keywords (TF-IDF)...','Detecting chunk types (eq/table/alg)...'],
+    ['Inserting chunks into search index...','Building BM25 inverted index...','Hybrid scoring: keyword + content overlap'],
+    ['Linking paper → section → chunk...','Building cross-reference edges...','Knowledge graph construction complete'],
   ];
 
-  const fd=new FormData(); fd.append('file',file);
+  // Build FormData with ALL valid files
+  const fd=new FormData();
+  valid.forEach(f=>{ fd.append('file',f); ST.files.push(f.name); });
+
+  log('Uploading '+valid.length+' file(s): '+valid.map(f=>f.name).join(', '));
   const uploadPromise=apiForm('/api/ingest',fd);
 
   for(let s=0;s<5;s++){
     document.getElementById('seg'+s).className='stage-seg active';
-    status.textContent=stages[s];
+    status.textContent=stages[s]+' ('+(s===0?valid.length+' file(s)':'');
     fill.style.width=((s+1)/5*85)+'%';
     log(stages[s]);
-    for(const msg of stageLog[s]){await delay(s===2?350:250);log(msg);}
+    for(const msg of stageLog[s]){await delay(250);log(msg);}
     document.getElementById('seg'+s).className='stage-seg done';
   }
 
   const result=await uploadPromise;
   fill.style.width='100%';
 
-  if(result){
-    log('Paper ID: '+result.paper_id,'ok');
-    log(result.total_chunks+' chunks | '+result.equations+' equations | '+result.tables+' tables | '+result.algorithms+' algorithms','ok');
-  } else {
-    const eq=Math.floor(Math.random()*20)+8;
-    const tbl=Math.floor(Math.random()*10)+2;
-    const alg=Math.floor(Math.random()*4)+1;
-    const chunks=eq*4+tbl*6+alg*8+50;
-    log('Complete - '+chunks+' chunks | '+eq+' equations | '+tbl+' tables | '+alg+' algorithms','ok');
-    log('Validation: LaTeX valid ('+eq+'/'+eq+') | Graph: '+(chunks+10)+' nodes, '+(chunks)+' edges','ok');
+  // Handle single or batch response
+  const results=result&&result.batch ? result.batch : (result ? [result] : []);
+  if(results.length){
+    results.forEach(r=>{
+      log(r.filename+' → '+r.total_chunks+' chunks | '+r.equations+' eq | '+r.tables+' tbl | '+r.algorithms+' alg','ok');
+    });
+    const totalChunks=results.reduce((a,r)=>a+r.total_chunks,0);
+    log('Total: '+results.length+' paper(s), '+totalChunks+' chunks indexed','ok');
   }
-  status.textContent='Complete';
-  showToast('ok',file.name+' ingested successfully');
+  status.textContent='Complete — '+valid.length+' file(s) indexed';
+  showToast('ok',valid.length+' document(s) ingested successfully');
 
   setTimeout(()=>{
     const id='c_'+Date.now();
-    const title=file.name.replace(/\.(pdf|docx|tex)$/i,'').slice(0,20)+'...';
+    const title=valid.length===1
+      ? valid[0].name.replace(/\.(pdf|docx|tex)$/i,'').slice(0,22)
+      : valid.length+' papers';
     ST.chats.unshift({id,title,day:'today'}); ST.chatId=id;
-    setChatTitle(file.name);
+    setChatTitle(title);
     renderChatList();
     const body=document.getElementById('chatBody'); body.innerHTML='';
-    appendFileBubble(file.name); appendTime('Just now');
-    appendBot("I've successfully ingested **"+file.name+"**. The document has been parsed, embedded, and indexed. What would you like to know?",[]);
+    valid.forEach(f=>appendFileBubble(f.name));
+    appendTime('Just now');
+    const names=valid.map(f=>'**'+f.name+'**').join(', ');
+    appendBot("Successfully ingested "+names+". All documents have been parsed, chunked, and indexed. What would you like to know?",[]);
     showPage('chat'); wrap.style.display='none';
   },1200);
 }
 
 async function handleChatFileUpload(files){
   if(!files||!files.length)return;
-  const file=files[0];
-  ST.files.push(file.name);
-  appendFileBubble(file.name); appendTime('Just now'); showTyping();
-  const fd=new FormData(); fd.append('file',file);
+  const allowed=['.pdf','.docx','.tex'];
+  const valid=Array.from(files).filter(f=>{
+    const ext=f.name.toLowerCase().slice(f.name.lastIndexOf('.'));
+    return allowed.includes(ext) && f.size<=100*1024*1024;
+  });
+  if(!valid.length){showToast('e','No supported files (PDF, DOCX, TEX).');return;}
+  valid.forEach(f=>{ST.files.push(f.name); appendFileBubble(f.name);});
+  appendTime('Just now'); showTyping();
+  const fd=new FormData();
+  valid.forEach(f=>fd.append('file',f));
   const r=await apiForm('/api/ingest',fd);
   removeTyping();
-  if(r){appendBot('Ingested **'+file.name+'**: '+r.total_chunks+' chunks, '+r.equations+' equations, '+r.tables+' tables.',r.sample_chunks||[]);}
-  else{appendBot('Got it — **'+file.name+'** has been processed and indexed. Ready for your questions.',[]);}
+  if(r){
+    const results=r.batch||[r];
+    const totalChunks=results.reduce((a,x)=>a+(x.total_chunks||0),0);
+    const names=results.map(x=>'**'+(x.filename||'file')+'**').join(', ');
+    appendBot('Ingested '+names+': '+totalChunks+' chunks total. Ready for your questions.',
+      (results[0]&&results[0].sample_chunks)||[]);
+  } else {
+    appendBot('Got it — '+valid.length+' document(s) processed and indexed. Ready for your questions.',[]);
+  }
 }
 
 async function handleChatEnter(){

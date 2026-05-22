@@ -82,43 +82,144 @@ STOPWORDS = {
     "its","which","their","than","then","when","where","how","what","into",
     "such","each","these","those","some","any","all","both","here","there",
     "use","used","using","show","shows","shown","paper","fig","figure","table",
-    "section","equation","given","since","thus","hence","note","let",
+    "section","equation","given","since","thus","hence","note","let","over",
+    "between","after","before","through","about","while","during","without",
+    "however","therefore","moreover","furthermore","while","although","because",
+    "result","results","obtained","proposed","present","approach","method",
 }
 
+# ── Chunking parameters ────────────────────────────────────────────────────────
+CHUNK_SIZE    = 450   # target characters per chunk
+CHUNK_OVERLAP = 100   # overlap characters between consecutive chunks
+MIN_CHUNK_LEN = 80    # discard anything shorter
 
-# ── PDF text extraction ───────────────────────────────────────────────────────
+
+# ── Text cleaning ──────────────────────────────────────────────────────────────
+
+def _clean_text(text: str) -> str:
+    """Normalize PDF-extracted text."""
+    text = re.sub(r"-\n", "", text)              # fix hyphenation across lines
+    text = re.sub(r"[ \t]+", " ", text)          # collapse spaces/tabs
+    text = re.sub(r"\n{3,}", "\n\n", text)       # max 2 consecutive newlines
+    text = re.sub(r" {2,}", " ", text)
+    return text.strip()
+
+
+def _is_noise_line(line: str) -> bool:
+    """True for bibliography entries, page numbers, lone numbers, headers."""
+    line = line.strip()
+    if not line:
+        return True
+    if re.match(r"^\d+$", line):                            # bare page number
+        return True
+    if re.match(r"^\[\d+\]", line):                         # [1] reference
+        return True
+    if re.match(r"^\d{1,3}\.\s+[A-Z][a-z].*\d{4}", line):  # numbered ref
+        return True
+    if len(line) < 15 and not re.search(r"[a-z]{4,}", line):# short no-text
+        return True
+    return False
+
+
+def _split_into_sentences(text: str) -> list:
+    """Split text at sentence boundaries, keeping fragments ≥ 20 chars."""
+    raw = re.split(r"(?<=[.!?])\s+(?=[A-Z\(\[])", text)
+    out = []
+    buf = ""
+    for part in raw:
+        buf = (buf + " " + part).strip() if buf else part.strip()
+        if len(buf) >= 40:
+            out.append(buf)
+            buf = ""
+    if buf:
+        out.append(buf)
+    return [s for s in out if len(s) >= 20]
+
+
+def _make_chunks(sentences: list, size: int = CHUNK_SIZE,
+                 overlap: int = CHUNK_OVERLAP) -> list:
+    """Group sentences into overlapping fixed-size chunks."""
+    if not sentences:
+        return []
+    chunks, current, cur_len = [], [], 0
+    for sent in sentences:
+        if cur_len + len(sent) > size and current:
+            chunks.append(" ".join(current))
+            # keep tail for overlap
+            tail, tail_len = [], 0
+            for s in reversed(current):
+                if tail_len + len(s) <= overlap:
+                    tail.insert(0, s); tail_len += len(s)
+                else:
+                    break
+            current, cur_len = tail, tail_len
+        current.append(sent); cur_len += len(sent) + 1
+    if current:
+        chunks.append(" ".join(current))
+    return chunks
+
+
+# ── Chunk type detection ───────────────────────────────────────────────────────
 
 def _detect_chunk_type(text: str) -> str:
-    math_symbols = ["=", "∫", "∂", "∑", "∇", "∆", "∈", "α", "β", "γ",
-                    "λ", "φ", "ψ", "σ", "θ", "ω", "Ω", "μ", "ε", "δ"]
-    math_hits = sum(1 for s in math_symbols if s in text)
-    if math_hits >= 2 or re.search(r"[A-Z]\s*\([\w,\s]+\)\s*=", text):
+    """Conservative: only label equation/algorithm/table when clear evidence."""
+    # Equation: several math symbols OR clear functional notation
+    math_sym = ["∫", "∂", "∑", "∇", "∆", "∈", "α", "β", "γ", "λ",
+                "φ", "ψ", "σ", "θ", "ω", "Ω", "μ", "ε", "δ"]
+    math_hits = sum(text.count(s) for s in math_sym)
+    has_func = bool(re.search(
+        r"[a-zA-Z_]\s*\([^)]{1,20}\)\s*=|∂[a-zA-Z]/∂[a-zA-Z]|d[A-Z]/d[txyz]", text))
+    if math_hits >= 3 or has_func:
         return "equation"
-    if re.search(r"(?i)(Algorithm|Procedure|Step)\s+\d", text):
+
+    # Algorithm: explicit label
+    if re.search(r"(?:Algorithm|Procedure)\s+\d", text, re.IGNORECASE):
         return "algorithm"
-    if text.count("|") >= 3:
+
+    # Table: multiple lines with pipe-separated or tab-separated numbers
+    lines = text.split("\n")
+    structured = sum(
+        1 for ln in lines
+        if ln.count("|") >= 2
+        or re.match(r"\s*(?:\d+\.?\d*\s+){3,}", ln)
+    )
+    if structured >= 3:
         return "table"
+
     return "text"
 
 
-def _extract_keywords(text: str, n: int = 10) -> list:
-    words = re.findall(r"[a-z]{4,}", text.lower())
+# ── Keyword extraction ─────────────────────────────────────────────────────────
+
+def _extract_keywords(text: str, n: int = 14) -> list:
+    """Extract single words + meaningful bigrams, ranked by frequency."""
+    words = [w for w in re.findall(r"[a-z]{4,}", text.lower()) if w not in STOPWORDS]
+    bigrams = [f"{a} {b}" for a, b in zip(words, words[1:])
+               if len(a) >= 4 and len(b) >= 4]
     freq: dict = {}
-    for w in words:
-        if w not in STOPWORDS:
-            freq[w] = freq.get(w, 0) + 1
+    for w in words + bigrams:
+        freq[w] = freq.get(w, 0) + 1
     return [w for w, _ in sorted(freq.items(), key=lambda x: -x[1])][:n]
 
 
+# ── PDF extraction ─────────────────────────────────────────────────────────────
+
 def _extract_pdf_chunks(file_bytes: bytes, filename: str, paper_id: str) -> list:
-    """Extract text chunks from a PDF using pypdf."""
+    """
+    Full pipeline:
+      1. Extract text per page with pypdf
+      2. Clean & normalise
+      3. Skip reference/noise pages
+      4. Split into paragraphs → sentences → overlapping chunks
+      5. Tag type and keywords per chunk
+    """
     chunks = []
     if not PDF_SUPPORT:
         return chunks
 
-    # Use filename (without extension) as the paper title
     paper_name = re.sub(r"\.pdf$", "", filename, flags=re.IGNORECASE)
     paper_name = re.sub(r"[_\-]", " ", paper_name).strip()
+    ci = 0
 
     try:
         reader = PdfReader(io.BytesIO(file_bytes))
@@ -127,59 +228,105 @@ def _extract_pdf_chunks(file_bytes: bytes, filename: str, paper_id: str) -> list
             if not raw.strip():
                 continue
 
-            # Split page into paragraphs (2+ newlines or 80+ char lines)
-            paragraphs = re.split(r"\n{2,}", raw)
-            for ci, para in enumerate(paragraphs):
-                para = para.strip()
-                if len(para) < 60:          # skip headers / page numbers
+            page_text = _clean_text(raw)
+
+            # Skip pages that are mostly reference lists
+            lines = page_text.split("\n")
+            noise_ratio = sum(1 for ln in lines if _is_noise_line(ln)) / max(len(lines), 1)
+            if noise_ratio > 0.60:
+                continue
+
+            # Remove individual noise lines before chunking
+            clean_lines = [ln for ln in lines if not _is_noise_line(ln)]
+            page_text = "\n".join(clean_lines)
+
+            # Split into paragraphs
+            paragraphs = re.split(r"\n{2,}", page_text)
+
+            for para in paragraphs:
+                para = re.sub(r"\s+", " ", para).strip()
+                if len(para) < MIN_CHUNK_LEN:
                     continue
-                para = re.sub(r"\s+", " ", para)   # normalise whitespace
 
-                chunk_type = _detect_chunk_type(para)
-                keywords   = _extract_keywords(para)
+                # Split para into sentences, then into overlapping chunks
+                sents   = _split_into_sentences(para) or [para]
+                for sub in _make_chunks(sents):
+                    sub = sub.strip()
+                    if len(sub) < MIN_CHUNK_LEN:
+                        continue
+                    chunk_type = _detect_chunk_type(sub)
+                    keywords   = _extract_keywords(sub)
+                    chunks.append({
+                        "chunk_id": f"{paper_id}_p{page_num}_c{ci}",
+                        "paper_id": paper_id,
+                        "paper":    paper_name,
+                        "authors":  "Uploaded Document",
+                        "year":     datetime.utcnow().year,
+                        "section":  f"p.{page_num}",
+                        "type":     chunk_type,
+                        "content":  sub[:600],
+                        "keywords": keywords,
+                        "source":   "uploaded",
+                    })
+                    ci += 1
 
-                chunk = {
-                    "chunk_id": f"{paper_id}_p{page_num}_c{ci}",
-                    "paper_id": paper_id,
-                    "paper":    paper_name,
-                    "authors":  "Uploaded Document",
-                    "year":     datetime.utcnow().year,
-                    "section":  f"p.{page_num}",
-                    "type":     chunk_type,
-                    "content":  para[:600],
-                    "keywords": keywords,
-                    "source":   "uploaded",
-                }
-                chunks.append(chunk)
     except Exception as exc:
         print(f"[WARN] PDF extract failed for {filename}: {exc}")
 
     return chunks
 
 
-# ── Scoring & search ──────────────────────────────────────────────────────────
+# ── BM25-inspired scoring ──────────────────────────────────────────────────────
 
 def _score_result(entry: dict, query: str) -> float:
-    q_words = set(re.findall(r"[a-z]{3,}", query.lower()))
+    """
+    Score a chunk against a query using:
+      - Term frequency in content (capped per term)
+      - Keyword field match bonus
+      - Paper title match bonus
+      - Consecutive phrase bonus
+      - Length normalisation (penalise very short chunks)
+      - Uploaded-PDF boost
+    """
+    q_words = re.findall(r"[a-z]{3,}", query.lower())
     if not q_words:
-        return 0.10
+        return 0.05
+
+    content   = entry.get("content", "").lower()
+    c_words   = re.findall(r"[a-z]{3,}", content)
+    c_len     = max(len(c_words), 1)
+    keywords  = [k.lower() for k in entry.get("keywords", [])]
+    paper     = entry.get("paper", "").lower()
 
     score = 0.0
-    # Keyword match (strong signal)
-    for kw in entry.get("keywords", []):
-        if kw in q_words or any(kw in qw or qw in kw for qw in q_words):
-            score += 0.18
+    for qw in q_words:
+        # TF (normalised, capped so one common word can't dominate)
+        tf = content.count(qw) / c_len
+        score += min(tf * 12, 0.14)
 
-    # Content word overlap
-    content_words = set(re.findall(r"[a-z]{3,}", entry.get("content", "").lower()))
-    overlap = len(q_words & content_words)
-    score += overlap * 0.07
+        # Keyword field match (strong signal — already TF-IDF weighted)
+        if any(qw == kw or qw in kw or kw in qw for kw in keywords):
+            score += 0.13
 
-    # Boost uploaded papers slightly so they surface above the fallback KB
+        # Paper title match
+        if qw in paper:
+            score += 0.06
+
+    # Phrase bonus: first 3 query words appear consecutively in content
+    if len(q_words) >= 2:
+        phrase = " ".join(q_words[:3])
+        if phrase in content:
+            score += 0.22
+
+    # Uploaded PDF boost
     if entry.get("source") == "uploaded":
-        score += 0.05
+        score += 0.10
 
-    return round(min(0.99, max(0.05, score)), 3)
+    # Length penalty for very short chunks (table cells, stray lines)
+    if len(content) < 100:
+        score *= 0.40
+
+    return round(min(0.99, max(0.01, score)), 3)
 
 
 def _search_chunks(query: str, top_k: int = 5) -> list:
